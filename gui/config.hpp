@@ -1,20 +1,23 @@
+#ifndef FLER_CONFIG_HPP
+#define FLER_CONFIG_HPP
+
 struct Esp {
   bool master = true;
 
   bool ignore_team = true;
-  
+
   bool spotted = false;
 
   bool box = true;
   int box_color[3] = {255, 0, 50};
-  
+
   bool health_bar = true;
   bool health_text = false;
-  
+
   bool name = true;
 
   bool weapon_name = false;
-  
+
   bool skeleton = false;
   int skeleton_color[3] = {255, 255, 255};
 
@@ -22,7 +25,7 @@ struct Esp {
   bool head_dot_fill = true;
   bool cat_ears = false;
   int head_dot_color[3] = {255, 255, 255};
-  
+
   bool snap_lines = false;
   int snap_lines_color[3] = {0, 255, 50};
 };
@@ -48,7 +51,7 @@ struct Aim {
 
   bool snap_lines = true;
   int snap_lines_color[3] = {255, 255, 0};
-  
+
   char key = 'c';
 
   bool recoil = true;
@@ -56,10 +59,17 @@ struct Aim {
   bool auto_shoot = false;
 };
 
+struct Theme {
+  int accent[3] = {255, 45, 77};
+};
+
 struct Config {
   Esp esp;
   Visuals visuals;
   Aim aim;
+  Theme theme;
 };
 
 inline Config config;
+
+#endif

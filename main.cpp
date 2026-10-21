@@ -15,12 +15,17 @@
 #include "xutil.hpp"
 
 int main(int argc, char *argv[]) {
+  if (getenv("FLER_GUI_ONLY")) { //menu preview without the game attached
+    gui(argc, argv);
+    return 0;
+  }
+
   if (getuid()) { //check if root
     printf("Please run as root\n");
     return 1;
   }
   pthread_setname_np(pthread_self(), "main_thread");
-  
+
   pid_t game_pid = Process::name_to_pid("cs2");
   if (!game_pid) {
     printf("Game not open\n");
@@ -165,18 +170,22 @@ int main(int argc, char *argv[]) {
   printf("force_attack: %p\n", Client::force_attack);
 
   //start all other thread loops
-  std::thread gui_thread(gui, argc, argv);
-  pthread_setname_np(gui_thread.native_handle(), "gui_thread");
-  
+  std::thread player_thread([game_pid]() {
+    for (;;) {
+      players(game_pid);
+      usleep(1000*1000/250);
+    }
+  });
+  pthread_setname_np(player_thread.native_handle(), "player_thread");
+
   std::thread draw_thread(draw, game_pid, back_buffer, draw_display, window);
   pthread_setname_np(draw_thread.native_handle(), "draw_thread");
 
   std::thread move_thread(create_move, game_pid, move_display);
   pthread_setname_np(move_thread.native_handle(), "move_thread");
 
-  //main_thead's loop
-  for (;;) {
-    players(game_pid);
-    usleep(1000*1000/250);
-  }
+  /* Qt owns the main thread: the event loop must not live in a worker. */
+  gui(argc, argv);
+
+  return 0;
 }

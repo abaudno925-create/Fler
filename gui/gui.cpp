@@ -1,457 +1,600 @@
 #include "gui.hpp"
+
 #include "config.hpp"
+#include "settings.hpp"
+#include "theme.hpp"
+#include "widgets.hpp"
 
 #include <QApplication>
-#include <QColorDialog>
-#include <QKeySequence>
-#include <QKeySequenceEdit>
-#include <QWidget>
-#include <QTabWidget>
-#include <QSlider>
-#include <QLabel>
-#include <QDebug>
-#include <QPushButton>
-#include <QVBoxLayout>
+#include <QButtonGroup>
+#include <QFrame>
 #include <QHBoxLayout>
-#include <QCheckBox>
-#include <QLayout>
-#include <QKeyEvent>
-#include <grp.h>
-#include <sys/types.h>
-#include <pwd.h>
-#include <unistd.h>
-#include <signal.h>
+#include <QLabel>
+#include <QPainter>
+#include <QPainterPath>
+#include <QRegion>
+#include <QResizeEvent>
+#include <QScrollArea>
+#include <QShowEvent>
+#include <QSlider>
+#include <QStackedWidget>
+#include <QTimer>
+#include <QVBoxLayout>
+#include <QVector>
+#include <QWidget>
 
-#define WIDTH 300
-#define HEIGHT 250
+#include <functional>
 
-void gui(int argc, char* argv[]) { 
+namespace {
+
+  const char *kVersion = "1.0.0";
+
+  /* ---------------- layout helpers ---------------- */
+
+  QWidget *makeRow(const QString &label, const QVector<QWidget *> &controls) {
+    auto *w = new QWidget;
+    auto *h = new QHBoxLayout(w);
+    h->setContentsMargins(0, 7, 0, 7);
+    h->setSpacing(12);
+
+    auto *l = new QLabel(label);
+    l->setObjectName("rowLabel");
+    h->addWidget(l);
+    h->addStretch(1);
+
+    for (QWidget *c : controls) h->addWidget(c, 0, Qt::AlignRight | Qt::AlignVCenter);
+
+    return w;
+  }
+
+  QWidget *makeRow(const QString &label, QWidget *control) {
+    return makeRow(label, QVector<QWidget *>{control});
+  }
+
+  QFrame *makeSeparator() {
+    auto *f = new QFrame;
+    f->setObjectName("line");
+    f->setFixedHeight(1);
+    return f;
+  }
+
+  QWidget *makePage() {
+    auto *scroll = new QScrollArea;
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+
+    auto *inner = new QWidget;
+    inner->setObjectName("page");
+    auto *lay = new QVBoxLayout(inner);
+    lay->setContentsMargins(26, 18, 26, 26);
+    lay->setSpacing(16);
+
+    scroll->setWidget(inner);
+    return scroll;
+  }
+
+  QVBoxLayout *pageLayout(QWidget *page) {
+    auto *scroll = qobject_cast<QScrollArea *>(page);
+    return qobject_cast<QVBoxLayout *>(scroll->widget()->layout());
+  }
+
+  /* Rounded panel with a small caps heading. */
+  class Card : public QFrame {
+  public:
+    explicit Card(const QString &title, QWidget *parent = nullptr) : QFrame(parent) {
+      setObjectName("card");
+      setFrameShape(QFrame::NoFrame);
+
+      body_ = new QVBoxLayout(this);
+      body_->setContentsMargins(18, 15, 18, 16);
+      body_->setSpacing(0);
+
+      if (!title.isEmpty()) {
+        auto *t = new QLabel(title);
+        t->setObjectName("cardTitle");
+        body_->addWidget(t);
+        body_->addSpacing(11);
+      }
+    }
+
+    QVBoxLayout *body() const { return body_; }
+
+    void addRow(QWidget *w) { body_->addWidget(w); }
+
+    void addSeparator() { body_->addWidget(makeSeparator()); }
+
+    void addText(const QString &text) {
+      auto *l = new QLabel(text);
+      l->setObjectName("rowValue");
+      l->setWordWrap(true);
+      body_->addWidget(l);
+    }
+
+  private:
+    QVBoxLayout *body_ = nullptr;
+  };
+
+  /* Label + slider + live value. */
+  class SliderRow : public QWidget {
+  public:
+    SliderRow(const QString &label, int minimum, int maximum, int value,
+              std::function<void(int)> on_change, QWidget *parent = nullptr)
+        : QWidget(parent) {
+      auto *lay = new QHBoxLayout(this);
+      lay->setContentsMargins(0, 6, 0, 6);
+      lay->setSpacing(14);
+
+      auto *l = new QLabel(label);
+      l->setObjectName("rowLabel");
+      lay->addWidget(l);
+      lay->addStretch(1);
+
+      slider_ = new QSlider(Qt::Horizontal);
+      slider_->setRange(minimum, maximum);
+      slider_->setValue(value);
+      slider_->setFixedWidth(210);
+      slider_->setTickPosition(QSlider::NoTicks);
+      lay->addWidget(slider_);
+
+      value_ = new QLabel(QString::number(value));
+      value_->setObjectName("rowValue");
+      value_->setMinimumWidth(34);
+      value_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+      lay->addWidget(value_);
+
+      connect(slider_, &QSlider::valueChanged, this, [this, on_change](int v) {
+        value_->setText(QString::number(v));
+        if (on_change) on_change(v);
+      });
+    }
+
+  private:
+    QSlider *slider_ = nullptr;
+    QLabel *value_ = nullptr;
+  };
+
+  /* Draggable title bar for the frameless window. */
+  class Header : public QWidget {
+  public:
+    explicit Header(QWidget *parent = nullptr) : QWidget(parent) {
+      setObjectName("header");
+      setFixedHeight(82);
+
+      auto *lay = new QHBoxLayout(this);
+      lay->setContentsMargins(28, 0, 18, 0);
+      lay->setSpacing(12);
+
+      auto *texts = new QVBoxLayout;
+      texts->setContentsMargins(0, 0, 0, 0);
+      texts->setSpacing(3);
+
+      title_ = new QLabel;
+      title_->setObjectName("pageTitle");
+      title_->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+      sub_ = new QLabel;
+      sub_->setObjectName("pageSub");
+      sub_->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+      texts->addWidget(title_);
+      texts->addWidget(sub_);
+      lay->addLayout(texts);
+      lay->addStretch(1);
+
+      auto *minimize = new QPushButton("–");
+      minimize->setObjectName("iconBtn");
+      minimize->setToolTip("Minimize");
+      minimize->setCursor(Qt::PointingHandCursor);
+      lay->addWidget(minimize);
+
+      auto *close = new QPushButton("✕");
+      close->setObjectName("iconBtn");
+      close->setProperty("cls", "close");
+      close->setToolTip("Close");
+      close->setCursor(Qt::PointingHandCursor);
+      lay->addWidget(close);
+
+      connect(minimize, &QPushButton::clicked, this, [this] { window()->showMinimized(); });
+      connect(close, &QPushButton::clicked, this, [this] { window()->close(); });
+    }
+
+    void setPage(const QString &title, const QString &subtitle) {
+      title_->setText(title);
+      sub_->setText(subtitle);
+    }
+
+  protected:
+    void mousePressEvent(QMouseEvent *e) override {
+      if (e->button() == Qt::LeftButton) {
+        dragging_ = true;
+        offset_ = e->globalPosition().toPoint() - window()->frameGeometry().topLeft();
+      }
+    }
+
+    void mouseMoveEvent(QMouseEvent *e) override {
+      if (dragging_) window()->move(e->globalPosition().toPoint() - offset_);
+    }
+
+    void mouseReleaseEvent(QMouseEvent *e) override { dragging_ = false; }
+
+  private:
+    QLabel *title_ = nullptr;
+    QLabel *sub_ = nullptr;
+    bool dragging_ = false;
+    QPoint offset_;
+  };
+
+  /* Frameless window with rounded corners. */
+  class FlerWindow : public QWidget {
+  public:
+    FlerWindow() {
+      setWindowFlags(Qt::Window | Qt::FramelessWindowHint);
+      setAttribute(Qt::WA_TranslucentBackground, true);
+    }
+
+  protected:
+    void resizeEvent(QResizeEvent *e) override {
+      applyMask();
+      QWidget::resizeEvent(e);
+    }
+
+    void showEvent(QShowEvent *e) override {
+      applyMask();
+      QWidget::showEvent(e);
+    }
+
+  private:
+    void applyMask() {
+      QPainterPath path;
+      path.addRoundedRect(QRectF(0.5, 0.5, width() - 1.0, height() - 1.0), 14, 14);
+      setMask(QRegion(path.toFillPolygon().toPolygon()));
+    }
+  };
+}
+
+void gui(int argc, char *argv[]) {
   QApplication app(argc, argv);
+  app.setStyle("Fusion");
+  app.setApplicationName("Fler");
 
-  QWidget window;
-  window.setWindowTitle("GNU/Linux CS2 Hack");
-  window.setGeometry(100, 100, WIDTH, HEIGHT);
-  window.setFixedSize(WIDTH, HEIGHT);
-  
-  QTabWidget* tabs = new QTabWidget(&window);
-  tabs->setGeometry(0, 0, WIDTH, HEIGHT);
+  Settings::load();
 
-  /* ESP begin */
-  QWidget* esp_tab = new QWidget;
-  
-  QVBoxLayout* esp_layout = new QVBoxLayout(esp_tab);
+  FlerWindow window;
+  window.setWindowTitle("Fler");
+  window.setMinimumSize(900, 560);
+  window.resize(1060, 690);
 
-  QCheckBox* esp_master = new QCheckBox("Master", esp_tab);
-  esp_master->setCheckState(Qt::CheckState::Checked);
-  esp_layout->addWidget(esp_master);
-  QObject::connect(esp_master, &QPushButton::clicked, []() {
-    config.esp.master = !config.esp.master;
-  });
-  
-  QCheckBox* esp_ignore_team = new QCheckBox("Ignore team", esp_tab);
-  esp_ignore_team->setCheckState(Qt::CheckState::Checked);
-  esp_layout->addWidget(esp_ignore_team);
-  QObject::connect(esp_ignore_team, &QPushButton::clicked, []() {
-    config.esp.ignore_team = !config.esp.ignore_team;
-  });  
-  
-  QCheckBox* esp_spotted = new QCheckBox("Spotted", esp_tab);
-  esp_spotted->setCheckState(Qt::CheckState::Unchecked);
-  esp_layout->addWidget(esp_spotted);
-  QObject::connect(esp_spotted, &QPushButton::clicked, []() {
-    config.esp.spotted = !config.esp.spotted;
-  });  
-  
-  /* Box begin */
-  QHBoxLayout* box_layout = new QHBoxLayout();
-  QCheckBox* esp_box = new QCheckBox("Box", esp_tab);
-  esp_box->setCheckState(Qt::CheckState::Checked);
-  box_layout->addWidget(esp_box);
-  QObject::connect(esp_box, &QPushButton::clicked, []() {
-    config.esp.box = !config.esp.box;
-  });
+  auto *windowLayout = new QVBoxLayout(&window);
+  windowLayout->setContentsMargins(0, 0, 0, 0);
+  windowLayout->setSpacing(0);
 
-  QWidget box_color_window;
-  box_color_window.setWindowTitle("Select Box Color");
-  box_color_window.setGeometry(100, 100, 520, 450);
-  box_color_window.setFixedSize(520, 450);
+  auto *root = new QWidget;
+  root->setObjectName("root");
+  windowLayout->addWidget(root);
 
-  QVBoxLayout* box_color_dialog_layout = new QVBoxLayout(&box_color_window);
+  auto *rootLayout = new QVBoxLayout(root);
+  rootLayout->setContentsMargins(0, 0, 0, 0);
+  rootLayout->setSpacing(0);
 
-  QColorDialog* box_color_dialog = new QColorDialog(QColor(255, 0, 50), esp_tab);
-  QPushButton* box_color_button = new QPushButton();
-  box_color_button->setAutoFillBackground(true);
-  box_color_button->setPalette(QColor(255, 0, 50));
-  box_color_button->update();
-  box_color_dialog_layout->addWidget(box_color_dialog);
-  box_color_dialog->setWindowFlags(Qt::Widget);
-  box_color_dialog->setOptions(QColorDialog::DontUseNativeDialog | QColorDialog::NoButtons);
-  box_layout->addWidget(box_color_button);
-  QObject::connect(box_color_button, &QPushButton::clicked, [&]() {
-    box_color_window.show();
-  });
+  auto *columns = new QHBoxLayout;
+  columns->setContentsMargins(0, 0, 0, 0);
+  columns->setSpacing(0);
+  rootLayout->addLayout(columns);
 
-  QObject::connect(box_color_dialog, &QColorDialog::currentColorChanged, [&](const QColor &color) {
-    color.getRgb(&config.esp.box_color[0], &config.esp.box_color[1], &config.esp.box_color[2]);
-    box_color_button->setPalette(color);
-    box_color_button->update();
-  });
- 
-  esp_layout->addLayout(box_layout);
-  /* Box end */
+  /* ---- sidebar ---- */
+  auto *sidebar = new QWidget;
+  sidebar->setObjectName("sidebar");
+  sidebar->setFixedWidth(222);
+  columns->addWidget(sidebar);
 
-  /* Health begin */
-  QHBoxLayout* health_layout = new QHBoxLayout();
-  QCheckBox* esp_health_bar = new QCheckBox("Health bar", esp_tab);
-  esp_health_bar->setCheckState(Qt::CheckState::Checked);
-  health_layout->addWidget(esp_health_bar);
-  QObject::connect(esp_health_bar, &QPushButton::clicked, []() {
-    config.esp.health_bar = !config.esp.health_bar;
-  });
-  
-  QCheckBox* esp_health_text = new QCheckBox("Health text", esp_tab);
-  esp_health_text->setCheckState(Qt::CheckState::Unchecked);
-  health_layout->addWidget(esp_health_text);
-  QObject::connect(esp_health_text, &QPushButton::clicked, []() {
-    config.esp.health_text = !config.esp.health_text;
-  });
+  auto *sideLayout = new QVBoxLayout(sidebar);
+  sideLayout->setContentsMargins(16, 20, 16, 16);
+  sideLayout->setSpacing(0);
 
-  esp_layout->addLayout(health_layout);
-  /* Health end */
-  
-  QCheckBox* esp_name = new QCheckBox("Name", esp_tab);
-  esp_name->setCheckState(Qt::CheckState::Checked);
-  esp_layout->addWidget(esp_name);
-  QObject::connect(esp_name, &QPushButton::clicked, []() {
-    config.esp.name = !config.esp.name;
-  });  
+  auto *brandRow = new QHBoxLayout;
+  brandRow->setSpacing(11);
+  brandRow->addWidget(new Logo);
 
-  QCheckBox* esp_weapon_name = new QCheckBox("Weapon name", esp_tab);
-  esp_weapon_name->setCheckState(Qt::CheckState::Unchecked);
-  esp_layout->addWidget(esp_weapon_name);
-  QObject::connect(esp_weapon_name, &QPushButton::clicked, []() {
-    config.esp.weapon_name = !config.esp.weapon_name;
-  });  
-  
-  /* Skeleton begin */
-  QHBoxLayout* skeleton_layout = new QHBoxLayout();
-  QCheckBox* esp_skeleton = new QCheckBox("Skeleton", esp_tab);
-  esp_skeleton->setCheckState(Qt::CheckState::Unchecked);
-  skeleton_layout->addWidget(esp_skeleton);
-  QObject::connect(esp_skeleton, &QPushButton::clicked, []() {
-    config.esp.skeleton = !config.esp.skeleton;
-  });
+  auto *brandText = new QVBoxLayout;
+  brandText->setContentsMargins(0, 0, 0, 0);
+  brandText->setSpacing(2);
+  auto *brandLabel = new QLabel("FLER");
+  brandLabel->setObjectName("brand");
+  auto *brandSub = new QLabel("CS2 · LINUX");
+  brandSub->setObjectName("brandSub");
+  brandText->addWidget(brandLabel);
+  brandText->addWidget(brandSub);
+  brandRow->addLayout(brandText);
+  brandRow->addStretch(1);
+  sideLayout->addLayout(brandRow);
+  sideLayout->addSpacing(28);
 
-  QWidget skeleton_color_window;
-  skeleton_color_window.setWindowTitle("Select Skeleton Color");
-  skeleton_color_window.setGeometry(100, 100, 520, 450);
-  skeleton_color_window.setFixedSize(520, 450);
+  /* ---- content ---- */
+  auto *content = new QWidget;
+  content->setObjectName("content");
+  columns->addWidget(content, 1);
 
-  QVBoxLayout* skeleton_color_dialog_layout = new QVBoxLayout(&skeleton_color_window);
+  auto *contentLayout = new QVBoxLayout(content);
+  contentLayout->setContentsMargins(0, 0, 0, 0);
+  contentLayout->setSpacing(0);
 
-  QColorDialog* skeleton_color_dialog = new QColorDialog(QColor(255, 255, 255), esp_tab);
-  QPushButton* skeleton_color_button = new QPushButton();
-  skeleton_color_button->setAutoFillBackground(true);
-  skeleton_color_button->setPalette(QColor(255, 255, 255));
-  skeleton_color_button->update();
-  skeleton_color_dialog_layout->addWidget(skeleton_color_dialog);
-  skeleton_color_dialog->setWindowFlags(Qt::Widget);
-  skeleton_color_dialog->setOptions(QColorDialog::DontUseNativeDialog | QColorDialog::NoButtons);
-  skeleton_layout->addWidget(skeleton_color_button);
-  QObject::connect(skeleton_color_button, &QPushButton::clicked, [&]() {
-    skeleton_color_window.show();
-  });
+  auto *header = new Header;
+  contentLayout->addWidget(header);
 
-  QObject::connect(skeleton_color_dialog, &QColorDialog::currentColorChanged, [&](const QColor &color) {
-    color.getRgb(&config.esp.skeleton_color[0], &config.esp.skeleton_color[1], &config.esp.skeleton_color[2]);
-    skeleton_color_button->setPalette(color);
-    skeleton_color_button->update();
-  });
- 
-  esp_layout->addLayout(skeleton_layout);
-  /* Skeleton end */
+  auto *stack = new QStackedWidget;
+  contentLayout->addWidget(stack, 1);
 
-  /* Head dot begin */
-  QHBoxLayout* head_dot_layout = new QHBoxLayout();
-  QCheckBox* esp_head_dot = new QCheckBox("Head dot", esp_tab);
-  esp_head_dot->setCheckState(Qt::CheckState::Unchecked);
-  head_dot_layout->addWidget(esp_head_dot);
-  QObject::connect(esp_head_dot, &QPushButton::clicked, []() {
-    config.esp.head_dot = !config.esp.head_dot;
-  });
+  /* ---- behaviour ---- */
+  auto *saveTimer = new QTimer(root);
+  saveTimer->setSingleShot(true);
+  saveTimer->setInterval(400);
+  QObject::connect(saveTimer, &QTimer::timeout, [] { Settings::save(); });
 
-  QCheckBox* esp_head_dot_fill = new QCheckBox("Filled", esp_tab);
-  esp_head_dot_fill->setCheckState(Qt::CheckState::Checked);
-  head_dot_layout->addWidget(esp_head_dot_fill);
-  QObject::connect(esp_head_dot_fill, &QPushButton::clicked, []() {
-    config.esp.head_dot_fill = !config.esp.head_dot_fill;
-  });
+  auto scheduleSave = [saveTimer] { saveTimer->start(); };
 
-  QCheckBox* esp_head_cat_ears = new QCheckBox("Ears", esp_tab);
-  esp_head_cat_ears->setCheckState(Qt::CheckState::Unchecked);
-  head_dot_layout->addWidget(esp_head_cat_ears);
-  QObject::connect(esp_head_cat_ears, &QPushButton::clicked, []() {
-    config.esp.cat_ears = !config.esp.cat_ears;
-  });  
-  
-  QWidget head_dot_color_window;
-  head_dot_color_window.setWindowTitle("Select Head_Dot Color");
-  head_dot_color_window.setGeometry(100, 100, 520, 450);
-  head_dot_color_window.setFixedSize(520, 450);
+  auto applyAccent = [root] {
+    Style::apply(root);
+    for (auto *widget : Paintable::paintables()) widget->refresh();
+  };
 
-  QVBoxLayout* head_dot_color_dialog_layout = new QVBoxLayout(&head_dot_color_window);
+  auto bindToggle = [root, scheduleSave](Toggle *toggle, bool *field) {
+    toggle->setChecked(*field);
+    QObject::connect(toggle, &QAbstractButton::toggled, root, [field, scheduleSave](bool on) {
+      *field = on;
+      scheduleSave();
+    });
+  };
 
-  QColorDialog* head_dot_color_dialog = new QColorDialog(QColor(255, 255, 255), esp_tab);
-  QPushButton* head_dot_color_button = new QPushButton();
-  head_dot_color_button->setAutoFillBackground(true);
-  head_dot_color_button->setPalette(QColor(255, 255, 255));
-  head_dot_color_button->update();
-  head_dot_color_dialog_layout->addWidget(head_dot_color_dialog);
-  head_dot_color_dialog->setWindowFlags(Qt::Widget);
-  head_dot_color_dialog->setOptions(QColorDialog::DontUseNativeDialog | QColorDialog::NoButtons);
-  head_dot_layout->addWidget(head_dot_color_button);
-  QObject::connect(head_dot_color_button, &QPushButton::clicked, [&]() {
-    head_dot_color_window.show();
-  });
+  auto makeToggle = [bindToggle](bool *field) {
+    auto *toggle = new Toggle(*field);
+    bindToggle(toggle, field);
+    return toggle;
+  };
 
-  QObject::connect(head_dot_color_dialog, &QColorDialog::currentColorChanged, [&](const QColor &color) {
-    color.getRgb(&config.esp.head_dot_color[0], &config.esp.head_dot_color[1], &config.esp.head_dot_color[2]);
-    head_dot_color_button->setPalette(color);
-    head_dot_color_button->update();
-  });
- 
-  esp_layout->addLayout(head_dot_layout);  
-  /* Head dot end */
-  
-  /* Snap lines begin */
-  QHBoxLayout* snap_lines_layout = new QHBoxLayout();
-  QCheckBox* snap_lines = new QCheckBox("Snap lines", esp_tab);
-  snap_lines->setCheckState(Qt::CheckState::Unchecked);
-  snap_lines_layout->addWidget(snap_lines);
-  QObject::connect(snap_lines, &QPushButton::clicked, []() {
-    config.esp.snap_lines = !config.esp.snap_lines;
-  });
+  auto makeSwatch = [scheduleSave](int *rgb) {
+    auto *swatch = new ColorSwatch(rgb);
+    swatch->setOnChange([scheduleSave] { scheduleSave(); });
+    return swatch;
+  };
 
-  QWidget snap_lines_color_window;
-  snap_lines_color_window.setWindowTitle("Select Snap Lines Color");
-  snap_lines_color_window.setGeometry(100, 100, 520, 450);
-  snap_lines_color_window.setFixedSize(520, 450);
-  
-  QVBoxLayout* snap_lines_color_dialog_layout = new QVBoxLayout(&snap_lines_color_window);
+  /* ---- pages ---- */
+  auto buildPages = std::make_shared<std::function<void()>>();
 
-  QColorDialog* snap_lines_color_dialog = new QColorDialog(QColor(0, 255, 0), esp_tab);
-  QPushButton* snap_lines_color_button = new QPushButton();
-  snap_lines_color_button->setAutoFillBackground(true);
-  snap_lines_color_button->setPalette(QColor(0, 255, 0));
-  snap_lines_color_button->update();
-  snap_lines_color_dialog_layout->addWidget(snap_lines_color_dialog);
-  snap_lines_color_dialog->setWindowFlags(Qt::Widget);
-  snap_lines_color_dialog->setOptions(QColorDialog::DontUseNativeDialog | QColorDialog::NoButtons);
-  snap_lines_layout->addWidget(snap_lines_color_button);
-  QObject::connect(snap_lines_color_button, &QPushButton::clicked, [&]() {
-    snap_lines_color_window.show();
-  });
+  auto buildEsp = [makeToggle, makeSwatch]() {
+    auto *page = makePage();
+    auto *lay = pageLayout(page);
 
-  QObject::connect(snap_lines_color_dialog, &QColorDialog::currentColorChanged, [&](const QColor &color) {
-    color.getRgb(&config.esp.snap_lines_color[0], &config.esp.snap_lines_color[1], &config.esp.snap_lines_color[2]);
-    snap_lines_color_button->setPalette(color);
-    snap_lines_color_button->update();
-  });
- 
-  esp_layout->addLayout(snap_lines_layout);
-  /* Snap lines end */
+    auto *players = new Card("PLAYERS");
+    players->addRow(makeRow("Master", makeToggle(&config.esp.master)));
+    players->addSeparator();
+    players->addRow(makeRow("Ignore team", makeToggle(&config.esp.ignore_team)));
+    players->addSeparator();
+    players->addRow(makeRow("Spotted only", makeToggle(&config.esp.spotted)));
+    lay->addWidget(players);
 
-  tabs->addTab(esp_tab, "ESP");
-  /* ESP end */
+    auto *renderers = new Card("RENDERERS");
+    renderers->addRow(makeRow("Box", {makeToggle(&config.esp.box),
+                                       makeSwatch(config.esp.box_color)}));
+    renderers->addSeparator();
+    renderers->addRow(makeRow("Health bar", makeToggle(&config.esp.health_bar)));
+    renderers->addSeparator();
+    renderers->addRow(makeRow("Health text", makeToggle(&config.esp.health_text)));
+    renderers->addSeparator();
+    renderers->addRow(makeRow("Name", makeToggle(&config.esp.name)));
+    renderers->addSeparator();
+    renderers->addRow(makeRow("Weapon name", makeToggle(&config.esp.weapon_name)));
+    renderers->addSeparator();
+    renderers->addRow(makeRow("Skeleton", {makeToggle(&config.esp.skeleton),
+                                           makeSwatch(config.esp.skeleton_color)}));
+    renderers->addSeparator();
+    renderers->addRow(makeRow("Head dot", {makeToggle(&config.esp.head_dot),
+                                           makeSwatch(config.esp.head_dot_color)}));
+    renderers->addSeparator();
+    renderers->addRow(makeRow("Filled head dot", makeToggle(&config.esp.head_dot_fill)));
+    renderers->addSeparator();
+    renderers->addRow(makeRow("Cat ears", makeToggle(&config.esp.cat_ears)));
+    renderers->addSeparator();
+    renderers->addRow(makeRow("Snap lines", {makeToggle(&config.esp.snap_lines),
+                                             makeSwatch(config.esp.snap_lines_color)}));
+    lay->addWidget(renderers);
 
-  /* Visuals begin */
-  QWidget* visuals_tab = new QWidget;
+    lay->addStretch(1);
+    return page;
+  };
 
-  QVBoxLayout* visuals_layout = new QVBoxLayout(visuals_tab);
+  auto buildAim = [makeToggle, makeSwatch, scheduleSave]() {
+    auto *page = makePage();
+    auto *lay = pageLayout(page);
 
-  /* Crosshair begin */
-  QHBoxLayout* crosshair_layout = new QHBoxLayout();
-  QCheckBox* crosshair = new QCheckBox("Crosshair", visuals_tab);
-  crosshair->setCheckState(Qt::CheckState::Unchecked);
-  crosshair_layout->addWidget(crosshair);
-  QObject::connect(crosshair, &QPushButton::clicked, []() {
-    config.visuals.crosshair = !config.visuals.crosshair;
-  });
-  
-  QWidget crosshair_color_window;
-  crosshair_color_window.setWindowTitle("Select Snap Lines Color");
-  crosshair_color_window.setGeometry(100, 100, 520, 450);
-  crosshair_color_window.setFixedSize(520, 450);
-  
-  QVBoxLayout* crosshair_color_dialog_layout = new QVBoxLayout(&crosshair_color_window);
+    auto *targeting = new Card("TARGETING");
+    targeting->addRow(makeRow("Master", makeToggle(&config.aim.master)));
+    targeting->addSeparator();
+    targeting->addRow(makeRow("Ignore team", makeToggle(&config.aim.ignore_team)));
+    targeting->addSeparator();
+    targeting->addRow(makeRow("Spotted only", makeToggle(&config.aim.spotted)));
+    lay->addWidget(targeting);
 
-  QColorDialog* crosshair_color_dialog = new QColorDialog(QColor(0, 255, 0), esp_tab);
-  QPushButton* crosshair_color_button = new QPushButton();
-  crosshair_color_button->setAutoFillBackground(true);
-  crosshair_color_button->setPalette(QColor(0, 255, 0));
-  crosshair_color_button->update();
-  crosshair_color_dialog_layout->addWidget(crosshair_color_dialog);
-  crosshair_color_dialog->setWindowFlags(Qt::Widget);
-  crosshair_color_dialog->setOptions(QColorDialog::DontUseNativeDialog | QColorDialog::NoButtons);
-  crosshair_layout->addWidget(crosshair_color_button);
-  QObject::connect(crosshair_color_button, &QPushButton::clicked, [&]() {
-    crosshair_color_window.show();
-  });
+    auto *aim = new Card("AIM");
+    aim->addRow(new SliderRow("Field of view", 1, 180, (int)config.aim.fov,
+                              [scheduleSave](int v) {
+                                config.aim.fov = (float)v;
+                                scheduleSave();
+                              }));
+    aim->addSeparator();
+    aim->addRow(makeRow("Show FOV circle", makeToggle(&config.aim.show_fov)));
+    aim->addSeparator();
+    aim->addRow(makeRow("Snap lines", {makeToggle(&config.aim.snap_lines),
+                                       makeSwatch(config.aim.snap_lines_color)}));
+    aim->addSeparator();
+    aim->addRow(makeRow("Recoil control", makeToggle(&config.aim.recoil)));
+    aim->addSeparator();
+    aim->addRow(makeRow("Auto shoot", makeToggle(&config.aim.auto_shoot)));
+    lay->addWidget(aim);
 
-  QObject::connect(crosshair_color_dialog, &QColorDialog::currentColorChanged, [&](const QColor &color) {
-    color.getRgb(&config.visuals.crosshair_color[0], &config.visuals.crosshair_color[1], &config.visuals.crosshair_color[2]);
-    crosshair_color_button->setPalette(color);
-    crosshair_color_button->update();
-  });
- 
-  visuals_layout->addLayout(crosshair_layout);
-  /* Crosshair end */
+    auto *hotkey = new Card("HOTKEY");
+    auto *bind = new KeyBind(&config.aim.key);
+    bind->setOnChange([scheduleSave] { scheduleSave(); });
+    hotkey->addRow(makeRow("Aim key", bind));
+    hotkey->addText("Hold this key to pull the aim onto the closest target inside the FOV.");
+    lay->addWidget(hotkey);
 
-  QCheckBox* visualize_recoil = new QCheckBox("Visualize recoil", visuals_tab);
-  visualize_recoil->setCheckState(Qt::CheckState::Checked);
-  visuals_layout->addWidget(visualize_recoil);
-  QObject::connect(visualize_recoil, &QPushButton::clicked, []() {
-    config.visuals.visualize_recoil = !config.visuals.visualize_recoil;
-  });
+    lay->addStretch(1);
+    return page;
+  };
 
-  
-  QCheckBox* sniper_only = new QCheckBox("Sniper only", visuals_tab);
-  sniper_only->setCheckState(Qt::CheckState::Checked);
-  visuals_layout->addWidget(sniper_only);
-  QObject::connect(sniper_only, &QPushButton::clicked, []() {
-    config.visuals.sniper_only = !config.visuals.sniper_only;
-  });
+  auto buildVisuals = [makeToggle, makeSwatch]() {
+    auto *page = makePage();
+    auto *lay = pageLayout(page);
 
-  QCheckBox* fps = new QCheckBox("Fps", visuals_tab);
-  fps->setCheckState(Qt::CheckState::Unchecked);
-  visuals_layout->addWidget(fps);
-  QObject::connect(fps, &QPushButton::clicked, []() {
-    config.visuals.fps = !config.visuals.fps;
-  });
-  
-  tabs->addTab(visuals_tab, "VISUALS");
-  /* Visuals end */
-  
-  /*Aimbot begin */
-  QWidget* aim_tab = new QWidget;
-  
-  QVBoxLayout* aim_layout = new QVBoxLayout(aim_tab);
-    
-  QCheckBox* aim_master = new QCheckBox("Master", aim_tab);
-  aim_master->setCheckState(Qt::CheckState::Unchecked);
-  aim_layout->addWidget(aim_master);
-  QObject::connect(aim_master, &QPushButton::clicked, []() {
-    config.aim.master = !config.aim.master;
-  });
+    auto *crosshair = new Card("CROSSHAIR");
+    crosshair->addRow(makeRow("Crosshair", {makeToggle(&config.visuals.crosshair),
+                                             makeSwatch(config.visuals.crosshair_color)}));
+    crosshair->addSeparator();
+    crosshair->addRow(makeRow("Sniper only", makeToggle(&config.visuals.sniper_only)));
+    crosshair->addSeparator();
+    crosshair->addRow(makeRow("Visualize recoil", makeToggle(&config.visuals.visualize_recoil)));
+    lay->addWidget(crosshair);
 
- QCheckBox* aim_ignore_team = new QCheckBox("Ignore team", aim_tab);
-  aim_ignore_team->setCheckState(Qt::CheckState::Checked);
-  aim_layout->addWidget(aim_ignore_team);
-  QObject::connect(aim_ignore_team, &QPushButton::clicked, []() {
-    config.aim.ignore_team = !config.aim.ignore_team;
-  });
-  
-  QCheckBox* aim_spotted = new QCheckBox("Spotted", aim_tab);
-  aim_spotted->setCheckState(Qt::CheckState::Unchecked);
-  aim_layout->addWidget(aim_spotted);
-  QObject::connect(aim_spotted, &QPushButton::clicked, []() {
-    config.aim.spotted = !config.aim.spotted;
-  });
-  
-  /* Aimbot fov begin */
-  QHBoxLayout* aim_fov_layout = new QHBoxLayout();
-  QSlider* aim_fov_slider = new QSlider(Qt::Horizontal, aim_tab);
-  aim_fov_slider->setRange(1, 180);
-  aim_fov_slider->setValue(90);
-  aim_fov_slider->setTickPosition(QSlider::NoTicks);
-  aim_fov_layout->addWidget(aim_fov_slider); 
+    auto *hud = new Card("HUD");
+    hud->addRow(makeRow("FPS counter", makeToggle(&config.visuals.fps)));
+    lay->addWidget(hud);
 
-  QLabel* aim_fov_label = new QLabel(aim_tab);
-  aim_fov_label->setText("FOV " + QString::number(aim_fov_slider->value()));
-  aim_fov_layout->addWidget(aim_fov_label);
+    lay->addStretch(1);
+    return page;
+  };
 
-  QObject::connect(aim_fov_slider, &QSlider::valueChanged, [&](int value) {
-    aim_fov_label->setText("FOV " + QString::number(aim_fov_slider->value()));
-    config.aim.fov = value;
-  });
+  auto buildTheme = [root, applyAccent, scheduleSave, buildPages]() {
+    auto *page = makePage();
+    auto *lay = pageLayout(page);
 
-  aim_layout->addLayout(aim_fov_layout);
-  /* Aimbot fov end */
-    
-  QCheckBox* aim_show_fov = new QCheckBox("Show FOV", aim_tab);
-  aim_show_fov->setCheckState(Qt::CheckState::Unchecked);
-  aim_layout->addWidget(aim_show_fov);
-  QObject::connect(aim_show_fov, &QPushButton::clicked, []() {
-    config.aim.show_fov = !config.aim.show_fov;
-  });
+    auto *accentCard = new Card("ACCENT");
+    auto *accentSwatch = new ColorSwatch(config.theme.accent);
+    accentSwatch->setOnChange([applyAccent, scheduleSave] {
+      applyAccent();
+      scheduleSave();
+    });
+    accentCard->addRow(makeRow("Accent color", accentSwatch));
 
-  /* Aimbot snap lines begin */
-  QHBoxLayout* aim_snap_lines_layout = new QHBoxLayout();
-  QCheckBox* aim_snap_lines = new QCheckBox("Aimbot snap lines", aim_tab);
-  aim_snap_lines->setCheckState(Qt::CheckState::Checked);
-  aim_snap_lines_layout->addWidget(aim_snap_lines);
-  QObject::connect(aim_snap_lines, &QPushButton::clicked, []() {
-    config.aim.snap_lines = !config.aim.snap_lines;
-  });  
+    auto *chips = new QWidget;
+    auto *chipLayout = new QHBoxLayout(chips);
+    chipLayout->setContentsMargins(0, 0, 0, 0);
+    chipLayout->setSpacing(9);
+    const QList<QColor> presets = {QColor(255, 45, 77), QColor(0, 229, 255),
+                                   QColor(126, 87, 255),  QColor(0, 255, 122),
+                                   QColor(255, 170, 0),   QColor(255, 255, 255)};
+    for (const QColor &preset : presets) {
+      auto *chip = new ColorChip(preset);
+      chip->setOnClick([preset, applyAccent, scheduleSave] {
+        config.theme.accent[0] = preset.red();
+        config.theme.accent[1] = preset.green();
+        config.theme.accent[2] = preset.blue();
+        applyAccent();
+        scheduleSave();
+      });
+      chipLayout->addWidget(chip);
+    }
+    chipLayout->addStretch(1);
+    accentCard->addRow(makeRow("Presets", chips));
+    lay->addWidget(accentCard);
 
-  QWidget aim_snap_lines_color_window;
-  aim_snap_lines_color_window.setWindowTitle("Select Snap Lines Color");
-  aim_snap_lines_color_window.setGeometry(100, 100, 520, 450);
-  aim_snap_lines_color_window.setFixedSize(520, 450);
-  
-  QVBoxLayout* aim_snap_lines_color_dialog_layout = new QVBoxLayout(&aim_snap_lines_color_window);
+    auto *configCard = new Card("CONFIGURATION");
+    auto *reset = new QPushButton("Reset to defaults");
+    reset->setObjectName("ghost");
+    reset->setCursor(Qt::PointingHandCursor);
+    QObject::connect(reset, &QPushButton::clicked, root, [root, buildPages, applyAccent,
+                                                           scheduleSave] {
+      config = Config{};
+      /* rebuild outside the click handler: it deletes the button that sent it */
+      QTimer::singleShot(0, root, [buildPages, applyAccent, scheduleSave] {
+        (*buildPages)();
+        applyAccent();
+        scheduleSave();
+      });
+    });
+    configCard->addRow(makeRow("Defaults", reset));
+    configCard->addText("Settings are stored in ~/.config/Fler/Fler.conf and restored on the "
+                        "next launch.");
+    lay->addWidget(configCard);
 
-  QColorDialog* aim_snap_lines_color_dialog = new QColorDialog(QColor(255, 255, 0), esp_tab);
-  QPushButton* aim_snap_lines_color_button = new QPushButton();
-  aim_snap_lines_color_button->setAutoFillBackground(true);
-  aim_snap_lines_color_button->setPalette(QColor(255, 255, 0));
-  aim_snap_lines_color_button->update();
-  aim_snap_lines_color_dialog_layout->addWidget(aim_snap_lines_color_dialog);
-  aim_snap_lines_color_dialog->setWindowFlags(Qt::Widget);
-  aim_snap_lines_color_dialog->setOptions(QColorDialog::DontUseNativeDialog | QColorDialog::NoButtons);
-  aim_snap_lines_layout->addWidget(aim_snap_lines_color_button);
-  QObject::connect(aim_snap_lines_color_button, &QPushButton::clicked, [&]() {
-    aim_snap_lines_color_window.show();
-  });
+    auto *about = new Card("ABOUT");
+    auto *badge = new QLabel(QString("v%1").arg(kVersion));
+    badge->setObjectName("badge");
+    about->addRow(makeRow("Version", badge));
+    about->addSeparator();
+    about->addText("Fler is an external X11 overlay for Counter-Strike 2 on Linux. Everything "
+                   "is rendered outside the game process, so the game itself stays untouched.");
+    lay->addWidget(about);
 
-  QObject::connect(aim_snap_lines_color_dialog, &QColorDialog::currentColorChanged, [&](const QColor &color) {
-    color.getRgb(&config.aim.snap_lines_color[0], &config.aim.snap_lines_color[1], &config.aim.snap_lines_color[2]);
-    aim_snap_lines_color_button->setPalette(color);
-    aim_snap_lines_color_button->update();
-  });
- 
-  aim_layout->addLayout(aim_snap_lines_layout);  
-  /* Aimbot snap lines end */
-  
-  QKeySequenceEdit* key = new QKeySequenceEdit;
-  key->setKeySequence(QKeySequence("c"));
-  aim_layout->addWidget(key);
-  QObject::connect(key, &QKeySequenceEdit::keySequenceChanged, [](const QKeySequence &keySequence) {
-    config.aim.key = keySequence.toString().toStdString()[0];
-  });
-  
-  QCheckBox* aim_recoil = new QCheckBox("Recoil control", aim_tab);
-  aim_recoil->setCheckState(Qt::CheckState::Checked);
-  aim_layout->addWidget(aim_recoil);
-  QObject::connect(aim_recoil, &QPushButton::clicked, []() {
-    config.aim.recoil = !config.aim.recoil;
-  });  
+    lay->addStretch(1);
+    return page;
+  };
 
-  QCheckBox* aim_auto_shoot = new QCheckBox("Automatically shoot", aim_tab);
-  aim_auto_shoot->setCheckState(Qt::CheckState::Unchecked);
-  aim_layout->addWidget(aim_auto_shoot);
-  QObject::connect(aim_auto_shoot, &QPushButton::clicked, []() {
-    config.aim.auto_shoot = !config.aim.auto_shoot;
-  }); 
-  
-  tabs->addTab(aim_tab, "AIMBOT");
-  /* Aimbot end */
-  
+  struct NavDef {
+    int glyph;
+    const char *title;
+    const char *subtitle;
+  };
+
+  const NavDef navDefs[4] = {
+      {0, "ESP", "Who is drawn on screen"},
+      {1, "AIMBOT", "Targeting and angles"},
+      {2, "VISUALS", "Crosshair and HUD"},
+      {3, "THEME", "Accent and configuration"},
+  };
+
+  *buildPages = [&]() {
+    while (stack->count() > 0) {
+      QWidget *old = stack->widget(0);
+      stack->removeWidget(old);
+      delete old;
+    }
+    stack->addWidget(buildEsp());
+    stack->addWidget(buildAim());
+    stack->addWidget(buildVisuals());
+    stack->addWidget(buildTheme());
+  };
+
+  (*buildPages)();
+
+  /* ---- navigation ---- */
+  auto *navGroup = new QButtonGroup;
+  navGroup->setExclusive(true);
+
+  for (int i = 0; i < 4; ++i) {
+    auto *item = new NavItem(navDefs[i].glyph, navDefs[i].title, sidebar);
+    item->setChecked(i == 0);
+    sideLayout->addWidget(item);
+    sideLayout->addSpacing(4);
+    navGroup->addButton(item, i);
+
+    const int index = i;
+    QObject::connect(item, &QPushButton::clicked, root, [=] {
+      stack->setCurrentIndex(index);
+      header->setPage(navDefs[index].title, navDefs[index].subtitle);
+    });
+  }
+
+  sideLayout->addStretch(1);
+
+  auto *footerLine = makeSeparator();
+  sideLayout->addWidget(footerLine);
+  sideLayout->addSpacing(12);
+
+  auto *version = new QLabel(QString("Fler v%1").arg(kVersion));
+  version->setObjectName("footer");
+  auto *platform = new QLabel("X11 overlay · Linux");
+  platform->setObjectName("footer");
+  sideLayout->addWidget(version);
+  sideLayout->addWidget(platform);
+
+  header->setPage(navDefs[0].title, navDefs[0].subtitle);
+
+  Style::apply(root);
+
   window.show();
-  
-  app.exec(); //halts here until window is destroyed
 
-  pthread_kill(pthread_self(), SIGINT);
-  
-  return;  
+  QObject::connect(&app, &QApplication::aboutToQuit, [] { Settings::save(); });
+
+  app.exec();
+
+  Settings::save();
 }
