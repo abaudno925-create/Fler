@@ -21,9 +21,9 @@ int main(int argc, char *argv[]) {
     return 0;
   }
 
-  if (getuid()) { //check if root
-    printf("Please run as root\n");
-    return 1;
+  if (getuid()) {
+    /* root is only needed when the game runs as a different user */
+    printf("Running as a normal user, this only works when the game runs as the same one\n");
   }
   pthread_setname_np(pthread_self(), "main_thread");
 
@@ -80,11 +80,10 @@ int main(int argc, char *argv[]) {
 
   unsigned long mask = CWColormap | CWBorderPixel | CWBackPixel | CWEventMask | CWWinGravity|CWBitGravity | CWSaveUnder | CWDontPropagate | CWOverrideRedirect;
 
-  //this assumes the game is full srceen of some sort. Why wouldn't it be? Play the damn game correctly!
-  int tmp_window_resolution[2];
-  Xutil::display_resolution(tmp_window_resolution);
-  Engine::window_width = tmp_window_resolution[0];
-  Engine::window_height = tmp_window_resolution[1];
+  /* the size of the screen the game runs on */
+  Engine::window_width = XDisplayWidth(display, screen);
+  Engine::window_height = XDisplayHeight(display, screen);
+  printf("screen: %dx%d\n", Engine::window_width, Engine::window_height);
   
   Window window = XCreateWindow(display, root, 0, 0, Engine::window_width, Engine::window_height, 0, vinfo.depth, InputOutput, vinfo.visual, mask, &attr);
   

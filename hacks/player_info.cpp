@@ -1,6 +1,7 @@
 #include "player_info.hpp"
 
 #include <unistd.h>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 
@@ -10,12 +11,12 @@
 
 namespace {
 
-  /* the identity of an entity carries its handle, the low 16 bits are the
-     index the entity list knows it by */
-  constexpr int kHandleOffset = 0x10;
-
-  /* the identities are 0x80 bytes apart in the current build */
+  /* the identities of the entities sit 0x80 bytes apart in the current build */
   constexpr uintptr_t kEntityStride = 0x80;
+
+  /* the model is about 72 units tall, the eye sits near the top */
+  constexpr float kModelHeight = 72.0f;
+  constexpr float kEyeHeight = 62.0f;
 
   uintptr_t entity_array(pid_t game_pid) {
     uintptr_t array = 0;
@@ -29,22 +30,8 @@ namespace {
     return entity;
   }
 
-  int entity_index(pid_t game_pid, uintptr_t entity) {
-    uint32_t handle = 0;
-    Memory::read(game_pid, entity + kHandleOffset, &handle, sizeof(handle));
-    return (int)(handle & 0xFFFF);
-  }
-
-  std::string read_name(pid_t game_pid, uintptr_t address) {
-    std::string name;
-    for (int i = 0; i < 64; ++i) {
-      char c = 0;
-      Memory::read(game_pid, address + i, &c, sizeof(c));
-      if (!c) break;
-      if (c < 32 || c > 126) return "";
-      name += c;
-    }
-    return name;
+  bool is_entity(uintptr_t address) {
+    return address > 0x100000000ULL && address < 0x700000000000ULL;
   }
 }
 
@@ -52,89 +39,73 @@ void players(pid_t game_pid) {
   const uintptr_t array = entity_array(game_pid);
   if (!array) return;
 
-  /* the local player is the one the game predicts ahead of everybody else */
-  static bool local_ready = false;
-  if (!local_ready) {
-    float best_time = -1.0f;
-    for (unsigned long i = 1; i <= 64; ++i) {
-      const uintptr_t entity = entity_at(game_pid, array, i);
-      if (!entity) continue;
+  /* the local player: the one the mouse moves. the view angles of everybody
+     else stay put, so the angles that change belong to the local pawn */
+  static float last_angles[512][2] = {{0.0f, 0.0f}};
+  static int moves[512] = {0};
+  static int local_index = -1;
+  static int best_moves = 0;
 
-      int team = 0;
-      Memory::read(game_pid, entity + Offsets::kTeam, &team, sizeof(team));
-      if (team < 1 || team > 3) continue;
-
-      float simulation_time = 0.0f;
-      Memory::read(game_pid, entity + Offsets::kSimulationTime, &simulation_time,
-                   sizeof(simulation_time));
-      if (simulation_time > best_time) {
-        best_time = simulation_time;
-        PlayerInfo::i_local_player = (int)i - 1;
-        PlayerInfo::local_pawn_address = entity;
-        local_ready = true;
-      }
-    }
-  }
-
-  for (unsigned long i = 1; i <= 64; ++i) {
+  for (unsigned long i = 0; i < 512; ++i) {
     const uintptr_t player = entity_at(game_pid, array, i);
-    if (!player) {
-      PlayerInfo::l_players[i-1] = PlayerInfo::Player();
+    if (!is_entity(player)) {
+      PlayerInfo::l_players[i] = PlayerInfo::Player();
       continue;
     }
-
-    int health = 0;
-    Memory::read(game_pid, player + Offsets::kHealth, &health, sizeof(health));
 
     int team = 0;
     Memory::read(game_pid, player + Offsets::kTeam, &team, sizeof(team));
     if (team < 1 || team > 3) {
-      PlayerInfo::l_players[i-1] = PlayerInfo::Player();
+      PlayerInfo::l_players[i] = PlayerInfo::Player();
       continue;
     }
 
     uintptr_t game_scene = 0;
     Memory::read(game_pid, player + Offsets::kGameScene, &game_scene, sizeof(game_scene));
-    if (!game_scene) {
-      PlayerInfo::l_players[i-1] = PlayerInfo::Player();
+    if (!is_entity(game_scene)) {
+      PlayerInfo::l_players[i] = PlayerInfo::Player();
       continue;
     }
 
     float location[3];
-    Memory::read(game_pid, game_scene + Offsets::kSceneOrigin, &location, sizeof(location));
+    Memory::read(game_pid, game_scene + Offsets::kSceneOrigin, location, sizeof(location));
 
-    int fov_desired = 0;
-    Memory::read(game_pid, player + Offsets::kViewAngles, &fov_desired, sizeof(fov_desired));
+    int health = 0;
+    Memory::read(game_pid, player + Offsets::kHealth, &health, sizeof(health));
+    if (health <= 0) health = 100;
 
-    float view_angles[2];
-    Memory::read(game_pid, player + Offsets::kViewAngles, &view_angles, sizeof(view_angles));
+    float view_angles[2] = {0.0f, 0.0f};
+    Memory::read(game_pid, player + Offsets::kViewAngles, view_angles, sizeof(view_angles));
 
-    /* the aim punch lives in its own service */
-    uintptr_t aim_punch_service = 0;
-    Memory::read(game_pid, player + Offsets::kAimPunch, &aim_punch_service,
-                 sizeof(aim_punch_service));
-
-    uintptr_t aim_punch_data_address = 0;
-    Memory::read(game_pid, aim_punch_service + 0x8, &aim_punch_data_address,
-                 sizeof(aim_punch_data_address));
-
-    float aim_punch[2] = {0.0f, 0.0f};
-    if (aim_punch_data_address) {
-      Memory::read(game_pid, aim_punch_data_address, aim_punch, sizeof(aim_punch));
-    }
-
-    float fov_multiplier = 0.0f;
-    Memory::read(game_pid, player + 0x12C4, &fov_multiplier, sizeof(fov_multiplier));
-
-    /* the bones of the skeleton */
-    uintptr_t bone_matrix_ptr = 0;
+    /* The bones are not part of the schema, so the skeleton is rebuilt from
+       the origin: the model stands on it and is 72 units tall. */
     float bone_matrix[80][3];
-    Memory::read(game_pid, game_scene + 0x1F0, &bone_matrix_ptr, sizeof(bone_matrix_ptr));
-    for (int b = 0; bone_matrix_ptr != NULL && b < 80; ++b) {
-      Memory::read(game_pid, bone_matrix_ptr + b * 32, &bone_matrix[b][0], sizeof(float[3]));
-    }
+    memset(bone_matrix, 0, sizeof(bone_matrix));
 
-    /* who is holding what */
+    const float base_x = location[0];
+    const float base_y = location[1];
+    const float base_z = location[2];
+
+    auto set_bone = [&](int index, float x, float y, float z) {
+      bone_matrix[index][0] = x;
+      bone_matrix[index][1] = y;
+      bone_matrix[index][2] = z;
+    };
+
+    set_bone(0, base_x, base_y, base_z);                     /* root */
+    set_bone(1, base_x, base_y, base_z + 56.0f);             /* neck */
+    set_bone(4, base_x - 12.0f, base_y, base_z + 48.0f);     /* shoulder */
+    set_bone(5, base_x + 12.0f, base_y, base_z + 48.0f);
+    set_bone(6, base_x, base_y, base_z + kEyeHeight);         /* head */
+    set_bone(22, base_x - 8.0f, base_y, base_z + 36.0f);      /* hips */
+    set_bone(23, base_x + 8.0f, base_y, base_z + 36.0f);
+    set_bone(24, base_x - 9.0f, base_y, base_z + 18.0f);      /* knees */
+    set_bone(25, base_x + 9.0f, base_y, base_z + 18.0f);
+    set_bone(26, base_x - 9.0f, base_y, base_z + 2.0f);       /* feet */
+    set_bone(27, base_x + 9.0f, base_y, base_z + 2.0f);
+    set_bone(29, base_x, base_y, base_z + kEyeHeight - 4.0f);
+
+    /* the weapon of the player */
     uintptr_t weapon_services = 0;
     Memory::read(game_pid, player + Offsets::kWeaponServices, &weapon_services,
                  sizeof(weapon_services));
@@ -151,51 +122,57 @@ void players(pid_t game_pid) {
     }
 
     std::string weapon_name;
-    if (weapon_entity) {
+    if (is_entity(weapon_entity)) {
       uintptr_t name_address = 0;
       Memory::read(game_pid, weapon_entity + 0x20, &name_address, sizeof(name_address));
-      if (name_address > 0x1000) weapon_name = read_name(game_pid, name_address);
-    }
-
-    /* the name of the player, the controller holds it */
-    std::string name;
-    uint32_t controller_handle = 0;
-    Memory::read(game_pid, player + Offsets::kControllerHandle, &controller_handle,
-                 sizeof(controller_handle));
-    if (controller_handle & 0x7FFF) {
-      const uintptr_t controller = entity_at(game_pid, array, controller_handle & 0x7FFF);
-      if (controller) {
-        uintptr_t name_address = 0;
-        Memory::read(game_pid, controller + Offsets::kControllerName, &name_address,
-                     sizeof(name_address));
-        if (name_address > 0x1000) name = read_name(game_pid, name_address);
+      if (name_address > 0x1000) {
+        for (int c = 0; c < 64; ++c) {
+          char letter = 0;
+          Memory::read(game_pid, name_address + c, &letter, sizeof(letter));
+          if (!letter) break;
+          if (letter < 32 || letter > 126) {
+            weapon_name.clear();
+            break;
+          }
+          weapon_name += letter;
+        }
       }
     }
 
-    unsigned char flags2 = 0;
-    Memory::read(game_pid, player + 0x564, &flags2, sizeof(flags2));
-    bool crouched = flags2 & (1 << 1);
-    bool on_ground = flags2 & (1 << 0);
-
-    float height = 0.0f;
-    Memory::read(game_pid, player + 0xC40, &height, sizeof(height));
-
-    uint64_t spotted_mask = 0;
-    Memory::read(game_pid, player + Offsets::kSpottedState, &spotted_mask,
-                 sizeof(spotted_mask));
-    bool spotted = (spotted_mask & (1ULL << PlayerInfo::i_local_player)) != 0;
-
-    if (player == PlayerInfo::local_pawn_address) {
-      PlayerInfo::local_weapon_address = weapon_entity;
+    /* the local player is the one whose angles the mouse moves */
+    const bool angles_sane = fabsf(view_angles[0]) <= 90.0f && fabsf(view_angles[1]) <= 180.0f &&
+                            (location[0] != 0.0f || location[1] != 0.0f);
+    if (angles_sane) {
+      if (fabsf(last_angles[i][0] - view_angles[0]) > 0.01f ||
+          fabsf(last_angles[i][1] - view_angles[1]) > 0.01f) {
+        ++moves[i];
+        if (moves[i] > best_moves) {
+          best_moves = moves[i];
+          local_index = (int)i;
+        }
+      }
     }
 
-    PlayerInfo::l_players[i-1] = PlayerInfo::Player(i-1, health, team, fov_desired,
-                                                    crouched, on_ground, spotted,
-                                                    fov_multiplier, fov_desired,
-                                                    height,
-                                                    view_angles, aim_punch,
-                                                    location, bone_matrix,
-                                                    PlayerInfo::l_players[i-1].fov_distance,
-                                                    name, weapon_name);
+    last_angles[i][0] = view_angles[0];
+    last_angles[i][1] = view_angles[1];
+
+    if (local_index == (int)i) {
+      PlayerInfo::i_local_player = (int)i;
+      PlayerInfo::local_pawn_address = player;
+      PlayerInfo::local_weapon_address = weapon_entity;
+      PlayerInfo::local_view_angles[0] = view_angles[0];
+      PlayerInfo::local_view_angles[1] = view_angles[1];
+      PlayerInfo::local_origin[0] = location[0];
+      PlayerInfo::local_origin[1] = location[1];
+      PlayerInfo::local_origin[2] = location[2];
+    }
+
+    PlayerInfo::l_players[i] = PlayerInfo::Player((int)i, health, team, 90,
+                                                  false, false, false,
+                                                  1.0f, 90, kModelHeight,
+                                                  view_angles, view_angles,
+                                                  location, bone_matrix,
+                                                  PlayerInfo::l_players[i].fov_distance,
+                                                  "", weapon_name);
   }
 }

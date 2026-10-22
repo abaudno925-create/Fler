@@ -1,3 +1,6 @@
+#ifndef FLER_PLAYER_INFO_HPP
+#define FLER_PLAYER_INFO_HPP
+
 #include <unistd.h>
 #include <cstdint>
 #include <string>
@@ -82,10 +85,10 @@ namespace PlayerInfo {
     }
   };
 
-  inline Player l_players[64];
+  inline Player l_players[512];
 
   static Player get_player(unsigned int index) {
-    if (index > 64) return Player();
+    if (index > 512) return Player();
     return l_players[index];
   }
 
@@ -97,7 +100,13 @@ namespace PlayerInfo {
   inline uintptr_t local_pawn_address = 0;
   inline uintptr_t local_weapon_address = 0;
 
+  /* the camera of the local player, the view matrix is built from it */
+  inline float local_view_angles[2] = {0.0f, 0.0f};
+  inline float local_origin[3] = {0.0f, 0.0f, 0.0f};
+
   static Player get_local_player(void) {
     return l_players[i_local_player];
   }
 }
+
+#endif

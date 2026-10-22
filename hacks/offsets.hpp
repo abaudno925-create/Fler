@@ -18,8 +18,9 @@ namespace Offsets {
   constexpr int kGameScene = 0x4A0;
   /* C_CSPlayerPawn::m_flSimulationTime */
   constexpr int kSimulationTime = 0x528;
-  /* C_CSPlayerPawn::m_angEyeAngles */
-  constexpr int kViewAngles = 0x4490;
+  /* C_CSPlayerPawn::m_angEyeAngles — the schema offset points at the network
+     var, the field itself lives here */
+  constexpr int kViewAngles = 0x564;
   /* C_CSPlayerPawn::m_pAimPunchServices */
   constexpr int kAimPunch = 0x1520;
   /* C_CSPlayerPawn::m_entitySpottedState */

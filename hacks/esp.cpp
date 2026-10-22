@@ -11,7 +11,7 @@ void esp(pid_t game_pid, XdbeBackBuffer back_buffer, Display* draw_display, Wind
   if (Xutil::focused_window_to_pid(draw_display) != game_pid) return;
   if (!config.esp.master) return;
   
-  for (unsigned long i = 0; i < 64; ++i) {
+  for (unsigned long i = 0; i < 512; ++i) {
     PlayerInfo::Player player = PlayerInfo::get_player(i);
     PlayerInfo::Player plocal = PlayerInfo::get_local_player();
 

@@ -4,6 +4,7 @@
 #include <cmath>
 
 #include "client.hpp"
+#include "hacks/player_info.hpp"
 #include "engine.hpp"
 
 #include "memory.hpp"
@@ -24,8 +25,65 @@ inline static float distance_3d(Vector3 location_one, Vector3 location_two) {
 }
  
 inline static float vmatrix[4][4];
+
+/* The game does not keep a world to screen matrix around any more, so it is
+   built from the camera of the local player: the eye angles, the origin of
+   the pawn and the field of view. */
+inline static void build_view_matrix() {
+  const float pitch = PlayerInfo::local_view_angles[0] * (float)(M_PI / 180.0);
+  const float yaw = PlayerInfo::local_view_angles[1] * (float)(M_PI / 180.0);
+
+  const float cp = cosf(pitch);
+  const float forward[3] = {cp * cosf(yaw), cp * sinf(yaw), sinf(pitch)};
+
+  float right[3] = {forward[1], -forward[0], 0.0f};
+  const float right_len = sqrtf(right[0] * right[0] + right[1] * right[1]);
+  if (right_len > 0.0001f) {
+    right[0] /= right_len;
+    right[1] /= right_len;
+  }
+
+  const float up[3] = {right[1] * forward[2] - right[2] * forward[1],
+                       right[2] * forward[0] - right[0] * forward[2],
+                       right[0] * forward[1] - right[1] * forward[0]};
+
+  const float eye[3] = {PlayerInfo::local_origin[0], PlayerInfo::local_origin[1],
+                        PlayerInfo::local_origin[2] + 62.0f};
+
+  const float width = (float)Engine::window_width;
+  const float height = (float)Engine::window_height;
+  const float fov_x = 90.0f * (float)(M_PI / 180.0);
+  float fov_y = 2.0f * atanf(tanf(fov_x / 2.0f) * (height > 1.0f ? height / width : 1.0f));
+
+  const float scale_x = 1.0f / tanf(fov_x / 2.0f);
+  const float scale_y = 1.0f / tanf(fov_y / 2.0f);
+
+  const float dot_right = right[0] * eye[0] + right[1] * eye[1] + right[2] * eye[2];
+  const float dot_up = up[0] * eye[0] + up[1] * eye[1] + up[2] * eye[2];
+  const float dot_forward = forward[0] * eye[0] + forward[1] * eye[1] + forward[2] * eye[2];
+
+  vmatrix[0][0] = right[0] * scale_x;
+  vmatrix[0][1] = right[1] * scale_x;
+  vmatrix[0][2] = right[2] * scale_x;
+  vmatrix[0][3] = -dot_right;
+
+  vmatrix[1][0] = up[0] * scale_y;
+  vmatrix[1][1] = up[1] * scale_y;
+  vmatrix[1][2] = up[2] * scale_y;
+  vmatrix[1][3] = -dot_up;
+
+  vmatrix[2][0] = forward[0];
+  vmatrix[2][1] = forward[1];
+  vmatrix[2][2] = forward[2];
+  vmatrix[2][3] = -dot_forward;
+
+  vmatrix[3][0] = forward[0];
+  vmatrix[3][1] = forward[1];
+  vmatrix[3][2] = forward[2];
+  vmatrix[3][3] = dot_forward;
+}
 inline static bool world_to_screen(pid_t gamePid, const Vector3 vIn, float vOut[2], bool ignore_oof=true) {
-  Memory::read(gamePid, Client::view_matrix, &vmatrix, sizeof(vmatrix));
+  build_view_matrix();
 
   float w = vmatrix[3][0] * vIn.x + vmatrix[3][1] * vIn.y + vmatrix[3][2] * vIn.z + vmatrix[3][3];
 

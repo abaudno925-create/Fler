@@ -9,7 +9,7 @@
 #include "../math.hpp"
 
 void aimbot(pid_t game_pid, Display* aim_display) {
-  for (unsigned long i = 0; i < 64; ++i) {
+  for (unsigned long i = 0; i < 512; ++i) {
     if (!config.aim.master) break;
       
     PlayerInfo::Player player = PlayerInfo::get_player(i);

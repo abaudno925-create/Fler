@@ -13,11 +13,15 @@ namespace MenuKey {
     std::atomic<int> g_generation{0};
     std::atomic<bool> g_toggle{false};
 
-    /* another instance may already hold the key — that must not kill us */
+    /* another instance may already hold the key — that must not kill us, and
+       the overlay spams errors of its own, so report every kind only once */
     int swallow_errors(Display *, XErrorEvent *event) {
-      if (event->error_code != BadAccess) {
+      static unsigned char seen[256] = {0};
+      const int code = event->error_code;
+      if (code >= 0 && code < 256 && !seen[code]) {
+        seen[code] = 1;
         char text[128];
-        XGetErrorText(event->display, event->error_code, text, sizeof(text));
+        XGetErrorText(event->display, code, text, sizeof(text));
         fprintf(stderr, "Fler: X11 error: %s\n", text);
       }
       return 0;
