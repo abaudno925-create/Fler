@@ -67,12 +67,21 @@ struct Menu {
   int toggle_key = 0xFF57; /* X11 keysym XK_End — shows/hides the menu */
 };
 
+struct Skin {
+  bool enabled = false;
+  int item = 0;  /* definition index of the weapon */
+  int paint = 0; /* paint kit id */
+  float wear = 0.0f;
+  int seed = 0;
+};
+
 struct Config {
   Esp esp;
   Visuals visuals;
   Aim aim;
   Theme theme;
   Menu menu;
+  Skin skin;
 };
 
 inline Config config;

@@ -91,6 +91,14 @@ namespace Settings {
     s.beginGroup("menu");
     config.menu.toggle_key = s.value("toggle_key", config.menu.toggle_key).toInt();
     s.endGroup();
+
+    s.beginGroup("skin");
+    config.skin.enabled = s.value("enabled", config.skin.enabled).toBool();
+    config.skin.item = s.value("item", config.skin.item).toInt();
+    config.skin.paint = s.value("paint", config.skin.paint).toInt();
+    config.skin.wear = s.value("wear", config.skin.wear).toFloat();
+    config.skin.seed = s.value("seed", config.skin.seed).toInt();
+    s.endGroup();
   }
 
   inline void save() {
@@ -143,6 +151,14 @@ namespace Settings {
 
     s.beginGroup("menu");
     s.setValue("toggle_key", config.menu.toggle_key);
+    s.endGroup();
+
+    s.beginGroup("skin");
+    s.setValue("enabled", config.skin.enabled);
+    s.setValue("item", config.skin.item);
+    s.setValue("paint", config.skin.paint);
+    s.setValue("wear", config.skin.wear);
+    s.setValue("seed", config.skin.seed);
     s.endGroup();
 
     s.sync();

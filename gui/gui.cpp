@@ -4,6 +4,7 @@
 #include "menu_key.hpp"
 #include "preview3d.hpp"
 #include "settings.hpp"
+#include "skins.hpp"
 #include "theme.hpp"
 #include "widgets.hpp"
 
@@ -576,10 +577,11 @@ void gui(int argc, char *argv[]) {
     const char *subtitle;
   };
 
-  const NavDef navDefs[4] = {
+  const NavDef navDefs[5] = {
       {0, "ESP", "Who is drawn on screen"},
       {1, "AIMBOT", "Targeting and angles"},
       {2, "VISUALS", "Crosshair and HUD"},
+      {7, "SKINS", "Weapon finishes from your game"},
       {3, "THEME", "Accent, hotkey and configuration"},
   };
 
@@ -592,6 +594,7 @@ void gui(int argc, char *argv[]) {
     stack->addWidget(buildEsp());
     stack->addWidget(buildAim());
     stack->addWidget(buildVisuals());
+    stack->addWidget(new SkinPage(scheduleSave));
     stack->addWidget(buildTheme());
   };
 
@@ -601,7 +604,7 @@ void gui(int argc, char *argv[]) {
   auto *navGroup = new QButtonGroup;
   navGroup->setExclusive(true);
 
-  for (int i = 0; i < 4; ++i) {
+  for (int i = 0; i < 5; ++i) {
     auto *item = new NavItem(navDefs[i].glyph, navDefs[i].title, sidebar);
     item->setChecked(i == 0);
     sideLayout->addWidget(item);
@@ -678,6 +681,25 @@ void gui(int argc, char *argv[]) {
   Style::apply(root);
 
   window.show();
+
+  /* dev aid: FLER_SHOT=file.png FLER_PAGE=n renders the menu to a file */
+  if (const char *shot = getenv("FLER_SHOT")) {
+    if (const char *page = getenv("FLER_PAGE")) {
+      const int index = atoi(page);
+      if (index >= 0 && index < 5) {
+        stack->setCurrentIndex(index);
+        header->setPage(navDefs[index].title, navDefs[index].subtitle);
+        for (int i = 0; i < 5; ++i) {
+          auto *item = navGroup->button(i);
+          if (item) item->setChecked(i == index);
+        }
+      }
+    }
+    QTimer::singleShot(1500, &window, [shot, &window] {
+      window.grab().save(QString::fromLatin1(shot));
+      QApplication::quit();
+    });
+  }
 
   QObject::connect(&app, &QApplication::aboutToQuit, [] { Settings::save(); });
 

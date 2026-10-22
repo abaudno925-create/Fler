@@ -92,7 +92,11 @@ namespace PlayerInfo {
   inline int i_local_player;
   inline uintptr_t local_player_controller_address;
   inline uintptr_t ptr_local_player;
-  
+
+  /* the local pawn and the weapon it holds — needed by the skin changer */
+  inline uintptr_t local_pawn_address = 0;
+  inline uintptr_t local_weapon_address = 0;
+
   static Player get_local_player(void) {
     return l_players[i_local_player];
   }

@@ -135,6 +135,56 @@ QPushButton#primary {
   padding: 9px 16px;
   font-weight: 700;
 }
+QPushButton#primary:checked {
+  background: @ACCENT@;
+  border: 1px solid @ACCENT_H@;
+}
+QLineEdit#search {
+  background: #12161D;
+  border: 1px solid #1F2632;
+  border-radius: 9px;
+  padding: 9px 12px;
+  color: #C9D1DE;
+  selection-background-color: @ACCENT@;
+}
+QLineEdit#search:focus {
+  border-color: @ACCENT@;
+}
+QLineEdit#search::placeholder {
+  color: #5F6A80;
+}
+QListWidget#skinList {
+  background: #0E1218;
+  border: 1px solid #1B212B;
+  border-radius: 12px;
+  padding: 6px;
+  outline: none;
+}
+QListWidget#skinList::item {
+  border-radius: 7px;
+  padding: 7px 10px;
+}
+QListWidget#skinList::item:hover {
+  background: #171D26;
+}
+QListWidget#skinList::item:selected {
+  background: @ACCENT_SOFT@;
+}
+QScrollBar:horizontal {
+  background: transparent;
+  height: 10px;
+  margin: 0;
+}
+QScrollBar::handle:horizontal {
+  background: #232A36;
+  border-radius: 5px;
+  min-width: 28px;
+}
+QScrollBar::add-line:horizontal,
+QScrollBar::sub-line:horizontal {
+  height: 0;
+  width: 0;
+}
 QPushButton#primary:hover {
   background: @ACCENT_H@;
 }

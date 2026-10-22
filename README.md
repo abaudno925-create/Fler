@@ -18,12 +18,39 @@ restarts.
 | **ESP** | Live preview with the real counter-terrorist and terrorist, master, team filter, spotted filter, box, health bar/text, name, weapon, skeleton, head dot, cat ears, snap lines — each with its own colour |
 | **Aimbot** | Targeting filters, FOV slider, FOV circle, snap lines, recoil control, auto shoot, rebindable aim key |
 | **Visuals** | Crosshair with colour, sniper-only crosshair, recoil visualisation, FPS counter |
+| **Skins** | Every finish of every weapon from your own game, searchable, with rarity colours, wear and seed |
 | **Theme** | Live accent colour with presets, menu hotkey, hide, reset to defaults, version info |
 
 ![Fler menu — ESP](docs/menu-esp.png)
 ![Fler menu — Aimbot](docs/menu-aimbot.png)
 ![Fler menu — Visuals](docs/menu-visuals.png)
+![Fler menu — Skins](docs/menu-skins.png)
 ![Fler menu — Theme](docs/menu-theme.png)
+
+### The skin changer
+
+The **Skins** page lists the real econ database — every paint kit the game ships,
+per weapon, with the localised names and the rarity colours. It is extracted
+from your own install:
+
+```console
+$ ./tools/fetch_skins.py
+```
+
+That writes `assets/skins.json`: the paint kits from `items_game.txt`, their
+names from `csgo_english.txt`, and the per weapon lists recovered from the
+econ preview image names in the VPK.
+
+Turning the changer on writes the finish into the weapon you hold from the
+outside: the fallback paint kit, seed and wear on the weapon entity, plus the
+item attribute list when the item already carries one, and the item id is
+invalidated so the client rebuilds it.
+
+The schema offsets shift with every Counter-Strike update, so they are
+calibrated against an offset that is known to work and every write is guarded
+by a sanity check — a stale schema leaves the changer off instead of
+corrupting the game. The status line at the bottom of the page says which
+state it is in.
 
 ### The ESP preview
 
@@ -112,6 +139,7 @@ $ FLER_GUI_ONLY=1 ./fler
   cat ears, snap lines, team and spotted filters
 - **Visuals** — crosshair, sniper crosshair, recoil visualisation, FPS counter
 - **Aimbot** — FOV circle, recoil control, auto shoot, rebindable hotkey
+- **Skins** — the full paint kit database of your own game, applied to the weapon in hand
 
 ## Compatibility
 

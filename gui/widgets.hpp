@@ -75,6 +75,10 @@ inline void draw_glyph(QPainter &p, const QRectF &r, int id, const QColor &c) {
     eye.quadTo(r.center().x(), r.bottom() + h * 0.08, r.left(), r.center().y());
     p.drawPath(eye);
     p.drawEllipse(r.center(), w * 0.15, w * 0.15);
+  } else if (id == 7) { /* skins — a paint palette */
+    p.drawEllipse(r.adjusted(w * 0.08, h * 0.12, -w * 0.18, -h * 0.18));
+    p.setBrush(c);
+    p.drawEllipse(QPointF(r.right() - w * 0.26, r.bottom() - h * 0.26), w * 0.1, h * 0.1);
   } else if (id == 4) { /* minimize */
     p.drawLine(r.left() + w * 0.2, r.bottom() - h * 0.18, r.right() - w * 0.2,
                r.bottom() - h * 0.18);

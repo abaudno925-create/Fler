@@ -146,6 +146,12 @@ void players(pid_t game_pid) {
 
     uintptr_t weapon_entity_instance;
     Memory::read(game_pid, player + 0x1348, &weapon_entity_instance, sizeof(uintptr_t));
+
+    if (player == local_player) {
+      PlayerInfo::local_pawn_address = player;
+      PlayerInfo::local_weapon_address = weapon_entity_instance;
+    }
+
     uintptr_t weapon_entity_identity;
     Memory::read(game_pid, weapon_entity_instance + 0x10, &weapon_entity_identity, sizeof(uintptr_t));
     uintptr_t weapon_name_address;
