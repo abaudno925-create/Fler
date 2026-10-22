@@ -141,6 +141,21 @@ $ FLER_GUI_ONLY=1 ./fler
 - **Aimbot** — FOV circle, recoil control, auto shoot, rebindable hotkey
 - **Skins** — the full paint kit database of your own game, applied to the weapon in hand
 
+## Offsets
+
+The cheat reads the schema of the running game through the schema system of
+`libschemasystem.so` — the classes with the offset of every field — so a
+Counter-Strike update cannot break it. `hacks/offsets.hpp` holds the result,
+generated from a live game:
+
+```console
+$ g++ -O2 -I. tools/dump_offsets.cpp hacks/schema.cpp -o /tmp/dump_offsets
+$ /tmp/dump_offsets > hacks/offsets.hpp
+```
+
+The cheat dumps the schema itself at startup and falls back to that header
+when the schema cannot be read.
+
 ## Compatibility
 
 Fler strictly uses X11. The overlay is a transparent, unredirected X window composited over
