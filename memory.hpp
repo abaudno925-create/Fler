@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <fstream>
 #include <cstdint>
+#include <cstring>
 #include <vector>
 #include <string>
 #include <iostream>
@@ -279,38 +280,52 @@ namespace Memory {
     return instruction + instruction_size + rip_address;
   }
 
+  /* The interface list is reached through a rip relative load inside
+     CreateInterface. The exact instruction moved between builds, so look for
+     it instead of assuming an offset, then walk the list and pick the entry
+     whose name matches. */
   static uintptr_t interface_offset(pid_t proc_pid, uintptr_t module_address, std::string interface_name) {
-    const uintptr_t create_interface_opt = module_export(proc_pid, module_address, "CreateInterface");
-    if (!create_interface_opt) {
+    const uintptr_t create_interface = module_export(proc_pid, module_address, "CreateInterface");
+    if (!create_interface) {
+      printf("could not find CreateInterface\n");
       return (uintptr_t)NULL;
     }
-    const uintptr_t create_interface = create_interface_opt;
-    const uintptr_t export_address_opt = Memory::relative_address(proc_pid, create_interface, 0x01, 0x05) + 0x10;
-    if (!export_address_opt) {
-      return (uintptr_t)NULL;
-    }
-    const uintptr_t export_address = export_address_opt;
 
-    uintptr_t interface_entry = (uintptr_t)NULL;
-    unsigned int exp = (unsigned)NULL;
-    Memory::read(proc_pid, export_address + 0x03, &exp, sizeof(unsigned int));
-    Memory::read(proc_pid, export_address + 0x07 + exp, &interface_entry, sizeof(uintptr_t));
-    
-    while (true) {
-      uintptr_t entry_name_address = (uintptr_t)NULL;
-      Memory::read(proc_pid, interface_entry + 8, &entry_name_address, sizeof(uintptr_t));
-      const std::string entry_name = read_string(proc_pid, entry_name_address);
-      if (entry_name.rfind(interface_name) != std::string::npos) {
-        uintptr_t vfunc_address = (uintptr_t)NULL;
-	Memory::read(proc_pid, interface_entry, &vfunc_address, sizeof(uintptr_t));
-	unsigned int instruction = (unsigned)NULL;
-	Memory::read(proc_pid, vfunc_address + 0x03, &instruction, sizeof(unsigned int));
-	return instruction + vfunc_address + 0x07;
-      }
-      Memory::read(proc_pid, interface_entry + 0x10, &interface_entry, sizeof(uintptr_t));
-      if (interface_entry == 0) {
-	printf("oh nos we broke out of the interface func :(\n");
-	break;
+    const std::vector<unsigned char> code = Memory::read_bytes(proc_pid, create_interface, 128);
+
+    for (size_t i = 0; i + 7 <= code.size(); ++i) {
+      /* 48 8b / 48 8d with a rip relative operand */
+      if (code[i] != 0x48) continue;
+      if (code[i + 1] != 0x8B && code[i + 1] != 0x8D) continue;
+      if ((code[i + 2] & 0xC7) != 0x05) continue;
+
+      int32_t displacement = 0;
+      memcpy(&displacement, &code[i + 3], 4);
+
+      uintptr_t head = (uintptr_t)NULL;
+      const uintptr_t slot = create_interface + i + 7 + displacement;
+      if (!Memory::read(proc_pid, slot, &head, sizeof(uintptr_t)) || !head) continue;
+
+      uintptr_t interface_entry = head;
+      for (int guard = 0; guard < 512 && interface_entry; ++guard) {
+        uintptr_t name_address = (uintptr_t)NULL;
+        if (!Memory::read(proc_pid, interface_entry + 8, &name_address, sizeof(uintptr_t))) break;
+
+        const std::string entry_name = read_string(proc_pid, name_address);
+        if (entry_name.empty()) break;
+
+        if (entry_name.rfind(interface_name) != std::string::npos) {
+          uintptr_t vfunc_address = (uintptr_t)NULL;
+          Memory::read(proc_pid, interface_entry, &vfunc_address, sizeof(uintptr_t));
+
+          unsigned int instruction = (unsigned int)NULL;
+          Memory::read(proc_pid, vfunc_address + 0x03, &instruction, sizeof(unsigned int));
+          return instruction + vfunc_address + 0x07;
+        }
+
+        uintptr_t next = (uintptr_t)NULL;
+        if (!Memory::read(proc_pid, interface_entry + 0x10, &next, sizeof(uintptr_t))) break;
+        interface_entry = next;
       }
     }
 

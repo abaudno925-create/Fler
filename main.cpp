@@ -5,6 +5,7 @@
 #include "hacks/player_info.hpp"
 #include "hacks/create_move.hpp"
 #include "hacks/draw.hpp"
+#include "hacks/schema.hpp"
 
 #include "gui/gui.hpp"
 
@@ -131,13 +132,14 @@ int main(int argc, char *argv[]) {
 
   Memory::read(game_pid, resource_offset + 0x50, &PlayerInfo::entity_list, sizeof(uintptr_t));
 
-  PlayerInfo::ptr_local_player = Memory::scan_pattern(game_pid,
-						      {0x48, 0x83, 0x3D, 0x00,  0x00,  0x00,  0x00,  0x00, 0x0F, 0x95, 0xC0, 0xC3},
-						      {true, true, true, false, false, false, false, true, true, true, true, true}, 12,
-						      client_address);
-  if (!PlayerInfo::ptr_local_player) { printf("Couldn't find local player\n"); return 1; }
-  PlayerInfo::local_player_controller_address = Memory::relative_address(game_pid, PlayerInfo::ptr_local_player, 0x3, 0x8);
-  
+  /* The schema of the running game holds the offset of every field, so an
+     update of Counter-Strike cannot break the cheat. */
+  if (Schema::dump(game_pid)) {
+    printf("schema: %d classes\n", Schema::class_count());
+  } else {
+    printf("schema: %s (falling back to the built in offsets)\n", Schema::status().c_str());
+  }
+
   Client::view_matrix = Memory::scan_pattern(game_pid,
 					     {0x48, 0x8D, 0x05, 0x00, 0x00, 0x00, 0x00, 0x4C, 0x8D, 0x05, 0x00, 0x00, 0x00, 0x00, 0x48, 0x8D, 0x0D},
 					     {
