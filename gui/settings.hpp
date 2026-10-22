@@ -87,6 +87,10 @@ namespace Settings {
     s.beginGroup("theme");
     load_color(s, "accent", config.theme.accent);
     s.endGroup();
+
+    s.beginGroup("menu");
+    config.menu.toggle_key = s.value("toggle_key", config.menu.toggle_key).toInt();
+    s.endGroup();
   }
 
   inline void save() {
@@ -135,6 +139,10 @@ namespace Settings {
 
     s.beginGroup("theme");
     save_color(s, "accent", config.theme.accent);
+    s.endGroup();
+
+    s.beginGroup("menu");
+    s.setValue("toggle_key", config.menu.toggle_key);
     s.endGroup();
 
     s.sync();

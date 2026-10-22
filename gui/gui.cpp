@@ -1,15 +1,19 @@
 #include "gui.hpp"
 
 #include "config.hpp"
+#include "menu_key.hpp"
+#include "preview3d.hpp"
 #include "settings.hpp"
 #include "theme.hpp"
 #include "widgets.hpp"
 
+#include <QAction>
 #include <QApplication>
 #include <QButtonGroup>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QMenu>
 #include <QPainter>
 #include <QPainterPath>
 #include <QRegion>
@@ -18,6 +22,7 @@
 #include <QShowEvent>
 #include <QSlider>
 #include <QStackedWidget>
+#include <QSystemTrayIcon>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QVector>
@@ -163,7 +168,7 @@ namespace {
 
       auto *lay = new QHBoxLayout(this);
       lay->setContentsMargins(28, 0, 18, 0);
-      lay->setSpacing(12);
+      lay->setSpacing(10);
 
       auto *texts = new QVBoxLayout;
       texts->setContentsMargins(0, 0, 0, 0);
@@ -180,20 +185,22 @@ namespace {
       lay->addLayout(texts);
       lay->addStretch(1);
 
-      auto *minimize = new QPushButton("–");
-      minimize->setObjectName("iconBtn");
-      minimize->setToolTip("Minimize");
-      minimize->setCursor(Qt::PointingHandCursor);
-      lay->addWidget(minimize);
+      hotkey_ = new QLabel;
+      hotkey_->setObjectName("badge");
+      hotkey_->setToolTip("Press this key to show or hide Fler");
+      hotkey_->setAlignment(Qt::AlignCenter);
+      lay->addWidget(hotkey_, 0, Qt::AlignVCenter);
 
-      auto *close = new QPushButton("✕");
-      close->setObjectName("iconBtn");
-      close->setProperty("cls", "close");
-      close->setToolTip("Close");
-      close->setCursor(Qt::PointingHandCursor);
+      auto *minimize = new IconButton(4, "Minimize");
+      auto *hide = new IconButton(5, "Hide menu");
+      auto *close = new IconButton(6, "Close");
+      close->setDanger(true);
+      lay->addWidget(minimize);
+      lay->addWidget(hide);
       lay->addWidget(close);
 
       connect(minimize, &QPushButton::clicked, this, [this] { window()->showMinimized(); });
+      connect(hide, &QPushButton::clicked, this, [this] { window()->hide(); });
       connect(close, &QPushButton::clicked, this, [this] { window()->close(); });
     }
 
@@ -202,12 +209,18 @@ namespace {
       sub_->setText(subtitle);
     }
 
+    void setHotkey(const QString &text) { hotkey_->setText(text); }
+
   protected:
     void mousePressEvent(QMouseEvent *e) override {
-      if (e->button() == Qt::LeftButton) {
-        dragging_ = true;
-        offset_ = e->globalPosition().toPoint() - window()->frameGeometry().topLeft();
-      }
+      if (e->button() != Qt::LeftButton) return;
+
+      /* Compositor driven move — the only way to drag on Wayland. */
+      QWindow *handle = window()->windowHandle();
+      if (handle && handle->startSystemMove()) return;
+
+      dragging_ = true;
+      offset_ = e->globalPosition().toPoint() - window()->frameGeometry().topLeft();
     }
 
     void mouseMoveEvent(QMouseEvent *e) override {
@@ -219,6 +232,7 @@ namespace {
   private:
     QLabel *title_ = nullptr;
     QLabel *sub_ = nullptr;
+    QLabel *hotkey_ = nullptr;
     bool dragging_ = false;
     QPoint offset_;
   };
@@ -340,6 +354,7 @@ void gui(int argc, char *argv[]) {
     toggle->setChecked(*field);
     QObject::connect(toggle, &QAbstractButton::toggled, root, [field, scheduleSave](bool on) {
       *field = on;
+      EspPreview::refresh_all();
       scheduleSave();
     });
   };
@@ -352,7 +367,10 @@ void gui(int argc, char *argv[]) {
 
   auto makeSwatch = [scheduleSave](int *rgb) {
     auto *swatch = new ColorSwatch(rgb);
-    swatch->setOnChange([scheduleSave] { scheduleSave(); });
+    swatch->setOnChange([scheduleSave] {
+      EspPreview::refresh_all();
+      scheduleSave();
+    });
     return swatch;
   };
 
@@ -362,6 +380,12 @@ void gui(int argc, char *argv[]) {
   auto buildEsp = [makeToggle, makeSwatch]() {
     auto *page = makePage();
     auto *lay = pageLayout(page);
+
+    auto *previewCard = new Card("LIVE PREVIEW");
+    previewCard->addRow(new EspPreview);
+    previewCard->addText("Rendered with the exact options below — a counter-terrorist and a "
+                         "terrorist.");
+    lay->addWidget(previewCard);
 
     auto *players = new Card("PLAYERS");
     players->addRow(makeRow("Master", makeToggle(&config.esp.master)));
@@ -462,7 +486,7 @@ void gui(int argc, char *argv[]) {
     return page;
   };
 
-  auto buildTheme = [root, applyAccent, scheduleSave, buildPages]() {
+  auto buildTheme = [root, header, applyAccent, scheduleSave, buildPages]() {
     auto *page = makePage();
     auto *lay = pageLayout(page);
 
@@ -495,6 +519,24 @@ void gui(int argc, char *argv[]) {
     chipLayout->addStretch(1);
     accentCard->addRow(makeRow("Presets", chips));
     lay->addWidget(accentCard);
+
+    auto *menuCard = new Card("MENU");
+    auto *keyBind = new KeySymBind(&config.menu.toggle_key);
+    keyBind->setOnChange([header, scheduleSave] {
+      MenuKey::start(config.menu.toggle_key);
+      header->setHotkey(KeySymBind::name(config.menu.toggle_key));
+      scheduleSave();
+    });
+    menuCard->addRow(makeRow("Toggle key", keyBind));
+
+    auto *hideButton = new QPushButton("Hide menu");
+    hideButton->setObjectName("ghost");
+    hideButton->setCursor(Qt::PointingHandCursor);
+    QObject::connect(hideButton, &QPushButton::clicked, root,
+                     [root] { root->window()->hide(); });
+    menuCard->addRow(makeRow("Visibility", hideButton));
+    menuCard->addText("The toggle key shows and hides Fler while the game keeps the focus.");
+    lay->addWidget(menuCard);
 
     auto *configCard = new Card("CONFIGURATION");
     auto *reset = new QPushButton("Reset to defaults");
@@ -538,7 +580,7 @@ void gui(int argc, char *argv[]) {
       {0, "ESP", "Who is drawn on screen"},
       {1, "AIMBOT", "Targeting and angles"},
       {2, "VISUALS", "Crosshair and HUD"},
-      {3, "THEME", "Accent and configuration"},
+      {3, "THEME", "Accent, hotkey and configuration"},
   };
 
   *buildPages = [&]() {
@@ -587,6 +629,51 @@ void gui(int argc, char *argv[]) {
   sideLayout->addWidget(platform);
 
   header->setPage(navDefs[0].title, navDefs[0].subtitle);
+
+  /* ---- global hotkey, tray and show/hide ---- */
+  MenuKey::start(config.menu.toggle_key);
+  header->setHotkey(KeySymBind::name(config.menu.toggle_key));
+
+  auto toggleMenu = [&window]() {
+    if (window.isVisible()) {
+      window.hide();
+    } else {
+      window.show();
+      window.raise();
+      window.activateWindow();
+    }
+  };
+
+  auto *hotkeyTimer = new QTimer(root);
+  hotkeyTimer->setInterval(40);
+  QObject::connect(hotkeyTimer, &QTimer::timeout, [toggleMenu] {
+    if (MenuKey::consume_toggle()) toggleMenu();
+  });
+  hotkeyTimer->start();
+
+  if (QSystemTrayIcon::isSystemTrayAvailable()) {
+    auto *tray = new QSystemTrayIcon(&window);
+    tray->setIcon(fler_icon(64));
+    tray->setToolTip("Fler");
+
+    auto *trayMenu = new QMenu(&window);
+    QAction *toggleAction = trayMenu->addAction("Show / hide Fler");
+    QObject::connect(toggleAction, &QAction::triggered, &window,
+                     [toggleMenu] { toggleMenu(); });
+    QAction *quitAction = trayMenu->addAction("Quit Fler");
+    QObject::connect(quitAction, &QAction::triggered, &window,
+                     [] { QApplication::quit(); });
+    tray->setContextMenu(trayMenu);
+
+    QObject::connect(tray, &QSystemTrayIcon::activated, &window,
+                     [toggleMenu](QSystemTrayIcon::ActivationReason reason) {
+                       if (reason == QSystemTrayIcon::Trigger ||
+                           reason == QSystemTrayIcon::DoubleClick) {
+                         toggleMenu();
+                       }
+                     });
+    tray->show();
+  }
 
   Style::apply(root);
 

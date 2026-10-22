@@ -106,26 +106,10 @@ QFrame#line {
   background: #191F28;
   border: none;
 }
-QPushButton#iconBtn {
-  background: #141922;
-  border: 1px solid #1F2632;
-  border-radius: 8px;
-  color: #7C879B;
-  font-size: 13px;
-  font-weight: 700;
-  min-width: 30px;
-  max-width: 30px;
-  min-height: 28px;
-  max-height: 28px;
-}
-QPushButton#iconBtn:hover {
-  background: #1B2230;
-  color: #E9EEF6;
-}
-QPushButton#iconBtn[cls="close"]:hover {
-  background: #E03146;
-  border-color: #E03146;
-  color: #FFFFFF;
+QWidget#preview {
+  background: #08090C;
+  border: 1px solid #1B212B;
+  border-radius: 12px;
 }
 QPushButton#key {
   background: #151A22;

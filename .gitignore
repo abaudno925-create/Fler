@@ -1,6 +1,10 @@
 # Binaries
 fler
 
+# Agent meshes extracted from the local CS2 install (Valve assets)
+assets/
+.vrf/
+
 # Prerequisites
 *.d
 

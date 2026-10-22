@@ -63,11 +63,16 @@ struct Theme {
   int accent[3] = {255, 45, 77};
 };
 
+struct Menu {
+  int toggle_key = 0xFF57; /* X11 keysym XK_End — shows/hides the menu */
+};
+
 struct Config {
   Esp esp;
   Visuals visuals;
   Aim aim;
   Theme theme;
+  Menu menu;
 };
 
 inline Config config;
