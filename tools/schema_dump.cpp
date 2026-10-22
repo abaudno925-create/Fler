@@ -42,9 +42,11 @@ int main(int argc, char **argv) {
   }
 
   for (const auto &entry : Schema::classes()) {
-    fprintf(out, "%s\n", entry.first.c_str());
-    for (const auto &field : entry.second) {
-      fprintf(out, "    %s = 0x%X\n", field.first.c_str(), field.second);
+    for (const auto &info : entry.second) {
+      fprintf(out, "%s\n", entry.first.c_str());
+      for (const auto &field : info.fields) {
+        fprintf(out, "    %s = 0x%X\n", field.first.c_str(), field.second);
+      }
     }
   }
   fclose(out);

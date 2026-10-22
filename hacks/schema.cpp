@@ -12,65 +12,83 @@ namespace Schema {
 
   namespace {
 
-    /* the class table, filled by dump() */
-    std::unordered_map<std::string, std::unordered_map<std::string, int>> g_classes;
-    std::unordered_map<std::string, std::string> g_parents;
-    bool g_ready = false;
-    std::string g_status = "not dumped";
-
-    /* layout of the schema structures inside the linux build */
+    /* The layout of the schema system inside the linux build. The classes of
+       a scope live in a UtlTsHash, the fields of a class are a plain array. */
     struct SchemaField {
       const char *name;
       void *type;
-      uint32_t offset;
-      uint32_t pad;
-    };
-
-    struct SchemaBaseClassData {
-      uint64_t pad0[2];
-      const char *name;
-      SchemaBaseClassData *next;
-    };
-
-    struct SchemaBaseClassRef {
-      uint64_t pad0[3];
-      SchemaBaseClassData *cls;
+      int32_t offset;
+      int32_t metadata_count;
+      uintptr_t metadata;
     };
 
     struct SchemaClass {
-      uint64_t pad0;
+      uintptr_t base;
       const char *name;
-      uint64_t pad1;
-      const char *name2;
-      uint32_t class_size;
-      uint16_t field_size;
-      uint16_t pad2;
-      int8_t alignment;
-      char pad3[3];
-      uint8_t base_class_count;
+      const char *binary_name;
+      const char *module_name;
+      int32_t class_size;
+      int16_t field_size;
+      int16_t static_metadata_count;
+      uint8_t pad0[2];
+      uint8_t alignment;
+      uint8_t has_base_class;
+      int16_t total_class_size;
+      int16_t derived_class_size;
       SchemaField *fields;
-      uint64_t base_classes;
-      SchemaBaseClassRef *derived_class;
+      uint8_t pad1[8];
+      uintptr_t base_classes;
+      uintptr_t static_metadata;
+      uintptr_t type_scope;
+      uintptr_t type;
+      uint8_t pad2[0x10];
     };
 
-    struct SchemaDeclaredClass {
-      uint64_t pad0[4];
-      SchemaClass *value;
+    struct HashNode {
+      uint64_t key;
+      uintptr_t next;
+      uintptr_t data;
     };
 
-    struct SchemaDeclaredClassEntry {
-      uint64_t pad0[2];
-      SchemaDeclaredClass *declared_class;
+    struct HashBucket {
+      uintptr_t add_lock;
+      uintptr_t first;
+      uintptr_t first_uncommitted;
     };
 
-    struct SchemaScope {
-      uint64_t pad0;
-      char name[0x100];
-      SchemaScope *global_scope;
-      char pad1[0x360];
-      uint16_t class_count;
-      SchemaDeclaredClassEntry *classes;
+    /* the elements that are not in a bucket any more */
+    struct HashBlob {
+      uintptr_t next;
+      uint8_t pad0[8];
+      uintptr_t data;
+      uint8_t pad1[0x18];
     };
+
+    /* the memory pool of the hash, the free list lives in it */
+    struct MemoryPool {
+      int32_t block_size;
+      int32_t blocks_per_blob;
+      uint32_t grow_mode;
+      int32_t blocks_allocated;
+      int32_t peak_allocated;
+      uint16_t alignment;
+      uint16_t blob_count;
+      uint8_t pad0[2];
+      uintptr_t free_blocks;
+      uint8_t pad1[0x20];
+      uintptr_t blob_head;
+      int32_t total_size;
+      uint8_t pad2[0xC];
+    };
+
+    constexpr uintptr_t kScopeClassHash = 0x560; /* the UtlTsHash of the classes */
+    constexpr uintptr_t kHashMemoryPool = 0x60;  /* size of the memory pool */
+    constexpr int kHashBuckets = 256;
+
+    std::unordered_map<std::string, std::vector<ClassInfo>> g_classes;
+    bool g_ready = false;
+    pid_t g_pid = 0;
+    std::string g_status = "not dumped";
 
     bool is_field_name(const std::string &name) {
       if (name.size() < 2 || name.size() > 96) return false;
@@ -90,12 +108,60 @@ namespace Schema {
       }
       return out;
     }
+
+    /* the field of a class, walking the base classes by pointer so the copy
+       from the right module is used */
+    int find_in_class(pid_t pid, uintptr_t data, const char *field_name, int depth) {
+      if (!data || depth > 12) return -1;
+
+      SchemaClass klass{};
+      if (!Memory::read(pid, data, &klass, sizeof(klass))) return -1;
+      if (!klass.fields || klass.field_size <= 0 || klass.field_size > 4096) return -1;
+
+      std::vector<SchemaField> field_list(klass.field_size);
+      if (!Memory::read(pid, (uintptr_t)klass.fields, field_list.data(),
+                        field_list.size() * sizeof(SchemaField))) {
+        return -1;
+      }
+
+      for (const SchemaField &field : field_list) {
+        if (!field.name) continue;
+        const std::string name = read_cstring(pid, (uintptr_t)field.name);
+        if (!is_field_name(name)) continue;
+        if (field.offset >= (uint32_t)klass.class_size) continue;
+        if (name == field_name) return (int)field.offset;
+      }
+
+      /* the base classes are an array of {pad, class data}, the pointer to it
+         sits right behind the fields pointer */
+      uintptr_t base_classes = 0;
+      if (!Memory::read(pid, data + 0x38, &base_classes, sizeof(base_classes))) return -1;
+      if (!base_classes) return -1;
+
+      for (uint8_t i = 0; i < 8; ++i) {
+        uintptr_t base = 0;
+        if (!Memory::read(pid, base_classes + i * 16 + 8, &base, sizeof(base))) break;
+        if (!base) continue;
+
+        /* a class data starts with a pointer to its name */
+        uintptr_t name_pointer = 0;
+        if (!Memory::read(pid, base + 0x08, &name_pointer, sizeof(name_pointer))) break;
+        if (!name_pointer) continue;
+        const std::string base_name = read_cstring(pid, name_pointer, 64);
+        if (!is_field_name(base_name)) continue;
+
+        const int found = find_in_class(pid, base, field_name, depth + 1);
+        if (found >= 0) return found;
+      }
+
+      return -1;
+    }
   }
 
   bool dump(pid_t game_pid) {
     g_classes.clear();
-    g_parents.clear();
     g_ready = false;
+    g_pid = game_pid;
     g_status = "looking for the schema system";
 
     const uintptr_t module = Memory::module_base_address(game_pid, "libschemasystem.so");
@@ -111,7 +177,7 @@ namespace Schema {
       return false;
     }
 
-    /* the type scopes live in a vector right behind the interface object */
+    /* the type scopes live in a vector behind the interface object */
     uint32_t scope_count = 0;
     uintptr_t scope_array = 0;
     for (uintptr_t offset = 0x100; offset < 0x400; offset += 8) {
@@ -144,63 +210,92 @@ namespace Schema {
     for (uintptr_t scope_address : scopes) {
       if (!scope_address) continue;
 
-      SchemaScope scope{};
-      if (!Memory::read(game_pid, scope_address, &scope, sizeof(scope))) continue;
-      if (!scope.classes || !scope.class_count) continue;
+      std::vector<uintptr_t> bindings;
 
-      std::vector<SchemaDeclaredClassEntry> entries(scope.class_count + 1);
-      if (!Memory::read(game_pid, (uintptr_t)scope.classes, entries.data(),
-                        entries.size() * sizeof(SchemaDeclaredClassEntry))) {
-        continue;
+      for (int bucket = 0; bucket < kHashBuckets; ++bucket) {
+        const uintptr_t bucket_address =
+            scope_address + kScopeClassHash + kHashMemoryPool + bucket * sizeof(HashBucket);
+
+        uintptr_t node_address = 0;
+        Memory::read(game_pid, bucket_address + 0x10, &node_address, sizeof(node_address));
+
+        int guard = 0;
+        while (node_address && guard++ < 8192) {
+          HashNode node{};
+          if (!Memory::read(game_pid, node_address, &node, sizeof(node))) break;
+
+          if (node.data) {
+            bindings.push_back(node.data);
+            SchemaClass klass{};
+            if (Memory::read(game_pid, node.data, &klass, sizeof(klass)) && klass.name &&
+                klass.fields && klass.field_size > 0 && klass.field_size < 4096) {
+              const std::string class_name = read_cstring(game_pid, (uintptr_t)klass.name);
+              if (!class_name.empty()) {
+                ClassInfo info;
+                info.data = node.data;
+                std::unordered_map<std::string, int> &fields = info.fields;
+
+                std::vector<SchemaField> field_list(klass.field_size);
+                if (Memory::read(game_pid, (uintptr_t)klass.fields, field_list.data(),
+                                field_list.size() * sizeof(SchemaField))) {
+                  for (const SchemaField &field : field_list) {
+                    if (!field.name) continue;
+                    const std::string field_name = read_cstring(game_pid, (uintptr_t)field.name);
+                    if (!is_field_name(field_name)) continue;
+                    if (field.offset >= (uint32_t)klass.class_size) continue;
+                    fields[field_name] = (int)field.offset;
+                  }
+                }
+
+                g_classes[class_name].push_back(info);
+              }
+            }
+          }
+
+          node_address = node.next;
+        }
       }
 
-      for (uint16_t i = 0; i < scope.class_count; ++i) {
-        SchemaDeclaredClass declared{};
-        if (!entries[i].declared_class) continue;
-        if (!Memory::read(game_pid, (uintptr_t)entries[i].declared_class, &declared,
-                          sizeof(declared))) {
-          continue;
+      /* the classes that were removed from the buckets are still in the free
+         list of the memory pool */
+      MemoryPool pool{};
+      if (Memory::read(game_pid, scope_address + kScopeClassHash, &pool, sizeof(pool)) &&
+          pool.free_blocks) {
+        uintptr_t blob_address = pool.free_blocks;
+        int guard = 0;
+        while (blob_address && guard++ < 8192) {
+          HashBlob blob{};
+          if (!Memory::read(game_pid, blob_address, &blob, sizeof(blob))) break;
+          if (blob.data) bindings.push_back(blob.data);
+          blob_address = blob.next;
         }
-        if (!declared.value) continue;
+      }
 
+      for (uintptr_t binding : bindings) {
         SchemaClass klass{};
-        if (!Memory::read(game_pid, (uintptr_t)declared.value, &klass, sizeof(klass))) continue;
-        if (!klass.name || !klass.fields || !klass.field_size) continue;
+        if (!Memory::read(game_pid, binding, &klass, sizeof(klass))) continue;
+        if (!klass.name || !klass.fields || klass.field_size <= 0 || klass.field_size > 4096) continue;
 
         const std::string class_name = read_cstring(game_pid, (uintptr_t)klass.name);
         if (class_name.empty()) continue;
 
-        std::unordered_map<std::string, int> &fields = g_classes[class_name];
+        ClassInfo info;
+        info.data = binding;
+        std::unordered_map<std::string, int> &fields = info.fields;
 
-        const size_t slots = klass.field_size;
-        std::vector<SchemaField> field_list(slots);
-        if (!Memory::read(game_pid, (uintptr_t)klass.fields, field_list.data(),
-                          field_list.size() * sizeof(SchemaField))) {
-          continue;
-        }
-
-        for (size_t f = 0; f < field_list.size(); ++f) {
-          if (!field_list[f].name) continue;
-          const std::string field_name = read_cstring(game_pid, (uintptr_t)field_list[f].name);
-          if (!is_field_name(field_name)) continue;
-          /* a field can never live past the end of its class */
-          if (field_list[f].offset >= klass.class_size) continue;
-          fields[field_name] = (int)field_list[f].offset;
-        }
-
-        /* remember the parent so lookups can walk the hierarchy */
-        if (klass.derived_class) {
-          SchemaBaseClassRef parent_ref{};
-          if (Memory::read(game_pid, (uintptr_t)klass.derived_class, &parent_ref,
-                           sizeof(parent_ref)) &&
-              parent_ref.cls) {
-            SchemaBaseClassData parent{};
-            if (Memory::read(game_pid, (uintptr_t)parent_ref.cls, &parent, sizeof(parent)) &&
-                parent.name) {
-              g_parents[class_name] = read_cstring(game_pid, (uintptr_t)parent.name);
-            }
+        std::vector<SchemaField> field_list(klass.field_size);
+        if (Memory::read(game_pid, (uintptr_t)klass.fields, field_list.data(),
+                         field_list.size() * sizeof(SchemaField))) {
+          for (const SchemaField &field : field_list) {
+            if (!field.name) continue;
+            const std::string field_name = read_cstring(game_pid, (uintptr_t)field.name);
+            if (!is_field_name(field_name)) continue;
+            if (field.offset >= (uint32_t)klass.class_size) continue;
+            fields[field_name] = (int)field.offset;
           }
         }
+
+        g_classes[class_name].push_back(info);
       }
     }
 
@@ -217,25 +312,20 @@ namespace Schema {
   bool ready() { return g_ready; }
 
   int offset(const char *class_name, const char *field_name) {
-    std::string name = class_name;
-
-    /* walk the inheritance chain, the field usually lives in a base class */
-    for (int depth = 0; depth < 16; ++depth) {
-      auto class_it = g_classes.find(name);
-      if (class_it != g_classes.end()) {
-        auto field_it = class_it->second.find(field_name);
-        if (field_it != class_it->second.end()) return field_it->second;
+    auto class_it = g_classes.find(class_name);
+    if (class_it != g_classes.end()) {
+      for (const ClassInfo &info : class_it->second) {
+        const int found = find_in_class(g_pid, info.data, field_name, 0);
+        if (found >= 0) return found;
       }
-
-      auto parent_it = g_parents.find(name);
-      if (parent_it == g_parents.end() || parent_it->second.empty()) break;
-      name = parent_it->second;
     }
 
     /* last resort: the field may be unique across the schema */
     for (const auto &entry : g_classes) {
-      auto field_it = entry.second.find(field_name);
-      if (field_it != entry.second.end()) return field_it->second;
+      for (const ClassInfo &info : entry.second) {
+        auto field_it = info.fields.find(field_name);
+        if (field_it != info.fields.end()) return field_it->second;
+      }
     }
 
     return -1;
@@ -245,7 +335,7 @@ namespace Schema {
 
   std::string status() { return g_status; }
 
-  const std::unordered_map<std::string, std::unordered_map<std::string, int>> &classes() {
+  const std::unordered_map<std::string, std::vector<ClassInfo>> &classes() {
     return g_classes;
   }
 }
