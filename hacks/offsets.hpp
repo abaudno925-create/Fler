@@ -7,7 +7,7 @@ namespace Offsets {
   /* CPlayer_WeaponServices::m_hActiveWeapon (fallback) */
   constexpr int kPawnHandle = 0x60;
   /* C_CSPlayerPawn::m_pWeaponServices */
-  constexpr int kWeaponServices = 0x1278;
+  constexpr int kWeaponServices = 0x3C0;
   /* CPlayer_WeaponServices::m_hMyWeapons (fallback) */
   constexpr int kMyWeapons = 0x48;
   /* C_CSPlayerPawn::m_iHealth */
@@ -37,8 +37,8 @@ namespace Offsets {
   constexpr int kFallbackSeed = 0x117C;
   /* C_EconEntity::m_flFallbackWear */
   constexpr int kFallbackWear = 0x1180;
-  /* C_EconEntity::m_bAttributesInitialized (fallback) */
-  constexpr int kAttributesInitialized = 0xD38;
+  /* C_EconEntity::m_bAttributesInitialized */
+  constexpr int kAttributesInitialized = 0xD30;
   /* C_EconEntity::m_AttributeManager */
   constexpr int kAttributeManager = 0xD38;
   /* C_AttributeContainer::m_Item */

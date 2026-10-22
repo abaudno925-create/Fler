@@ -45,6 +45,7 @@ void players(pid_t game_pid) {
   static int moves[512] = {0};
   static int local_index = -1;
   static int best_moves = 0;
+  static float best_simulation_time = -1.0f;
 
   for (unsigned long i = 0; i < 512; ++i) {
     const uintptr_t player = entity_at(game_pid, array, i);
@@ -76,6 +77,10 @@ void players(pid_t game_pid) {
 
     float view_angles[2] = {0.0f, 0.0f};
     Memory::read(game_pid, player + Offsets::kViewAngles, view_angles, sizeof(view_angles));
+
+    float simulation_time = 0.0f;
+    Memory::read(game_pid, player + Offsets::kSimulationTime, &simulation_time,
+                 sizeof(simulation_time));
 
     /* The bones are not part of the schema, so the skeleton is rebuilt from
        the origin: the model stands on it and is 72 units tall. */
@@ -139,7 +144,14 @@ void players(pid_t game_pid) {
       }
     }
 
-    /* the local player is the one whose angles the mouse moves */
+    /* The local player is the one the game predicts ahead of everybody
+       else, its simulation time is a tick in front. The angles the mouse
+       moves confirm it. */
+    if (simulation_time > best_simulation_time) {
+      best_simulation_time = simulation_time;
+      local_index = (int)i;
+    }
+
     const bool angles_sane = fabsf(view_angles[0]) <= 90.0f && fabsf(view_angles[1]) <= 180.0f &&
                             (location[0] != 0.0f || location[1] != 0.0f);
     if (angles_sane) {
