@@ -1,6 +1,8 @@
 #ifndef FLER_ESP_OVERLAY_HPP
 #define FLER_ESP_OVERLAY_HPP
 
+#include <cstdio>
+
 #include <QColor>
 #include <QFont>
 #include <QPainter>
@@ -55,6 +57,7 @@ private:
   }
 
   void drawPlayers(QPainter &p) {
+    fprintf(stderr, "[overlay] paint master=%d\n", (int)config.esp.master);
     if (!config.esp.master) return;
 
     const PlayerInfo::Player &local = PlayerInfo::get_local_player();
@@ -77,6 +80,8 @@ private:
       if (!world_to_screen(0, feet, bottom, true)) continue;
       if (!world_to_screen(0, top_point, top, true)) continue;
 
+      fprintf(stderr, "[overlay] player %d team %d dist %.1f bottom %.0f,%.0f top %.0f,%.0f\n",
+              i, player.team, distance, bottom[0], bottom[1], top[0], top[1]);
       const float health_offset = (13000.0f / distance) / local.fov_multiplier;
       const float box_offset = (12000.0f / distance) / local.fov_multiplier;
 

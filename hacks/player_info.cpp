@@ -45,7 +45,6 @@ void players(pid_t game_pid) {
   static int moves[512] = {0};
   static int local_index = -1;
   static int best_moves = 0;
-  static float best_simulation_time = -1.0f;
 
   for (unsigned long i = 0; i < 512; ++i) {
     const uintptr_t player = entity_at(game_pid, array, i);
@@ -73,7 +72,6 @@ void players(pid_t game_pid) {
 
     int health = 0;
     Memory::read(game_pid, player + Offsets::kHealth, &health, sizeof(health));
-    if (health <= 0) health = 100;
 
     float view_angles[2] = {0.0f, 0.0f};
     Memory::read(game_pid, player + Offsets::kViewAngles, view_angles, sizeof(view_angles));
@@ -144,14 +142,8 @@ void players(pid_t game_pid) {
       }
     }
 
-    /* The local player is the one the game predicts ahead of everybody
-       else, its simulation time is a tick in front. The angles the mouse
-       moves confirm it. */
-    if (simulation_time > best_simulation_time) {
-      best_simulation_time = simulation_time;
-      local_index = (int)i;
-    }
-
+    /* The local player is the only one whose view angles the mouse moves,
+       the bots keep theirs at zero. */
     const bool angles_sane = fabsf(view_angles[0]) <= 90.0f && fabsf(view_angles[1]) <= 180.0f &&
                             (location[0] != 0.0f || location[1] != 0.0f);
     if (angles_sane) {
