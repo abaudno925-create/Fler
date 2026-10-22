@@ -103,7 +103,7 @@ void players(pid_t game_pid) {
     set_bone(25, base_x + 9.0f, base_y, base_z + 18.0f);
     set_bone(26, base_x - 9.0f, base_y, base_z + 2.0f);       /* feet */
     set_bone(27, base_x + 9.0f, base_y, base_z + 2.0f);
-    set_bone(29, base_x, base_y, base_z + kEyeHeight - 4.0f);
+    set_bone(29, base_x, base_y, base_z);   /* the feet, the box starts here */
 
     /* the weapon of the player */
     uintptr_t weapon_services = 0;

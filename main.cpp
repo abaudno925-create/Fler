@@ -35,90 +35,17 @@ int main(int argc, char *argv[]) {
   
   printf("Game pid: %d\n", game_pid);  
   
-  /* X11 initiation */
+  /* X11 initiation — the display is only used to check which window has the
+     focus, the overlay itself is drawn by Qt */
   Display* display = XOpenDisplay(NULL);
   if (!display) return 1;
-
-  Display* draw_display = XOpenDisplay(NULL);
-
   Display* move_display = XOpenDisplay(NULL);
-  
+  if (!move_display) return 1;
   int screen = DefaultScreen(display);
 
-  int shape_event_base;
-  int shape_error_base;
-
-  if (!XShapeQueryExtension(display, &shape_event_base, &shape_error_base)) {
-    printf("cs-source-hack: NO shape extension in your system !\n");
-    return 1;
-  }
-
-  Window root = DefaultRootWindow(display);
-
-  Visual* visual = DefaultVisual(display, screen);
-
-  XVisualInfo vinfo;
-  XMatchVisualInfo(display, DefaultScreen(display), 32, TrueColor, &vinfo);
-  Colormap colormap = XCreateColormap(display, DefaultRootWindow(display), vinfo.visual, AllocNone);
-
-  Xutil::Color bgcolor = Xutil::xcolor_from_rgba(0, 0, 0, 0, display);
-  
-#define BASIC_EVENT_MASK (StructureNotifyMask|ExposureMask|PropertyChangeMask|EnterWindowMask|LeaveWindowMask|KeyPressMask|KeyReleaseMask|KeymapStateMask)
-#define NOT_PROPAGATE_MASK (KeyPressMask|KeyReleaseMask|ButtonPressMask|ButtonReleaseMask|PointerMotionMask|ButtonMotionMask)
-
-  XSetWindowAttributes attr;
-  attr.background_pixmap = None;
-  attr.background_pixel = bgcolor;
-  attr.border_pixel=0;
-  attr.win_gravity=NorthWestGravity;
-  attr.bit_gravity=ForgetGravity;
-  attr.save_under=1;
-  attr.event_mask=BASIC_EVENT_MASK;
-  attr.do_not_propagate_mask=NOT_PROPAGATE_MASK;
-  attr.override_redirect=1; // OpenGL > 0
-  attr.colormap = colormap;
-
-  unsigned long mask = CWColormap | CWBorderPixel | CWBackPixel | CWEventMask | CWWinGravity|CWBitGravity | CWSaveUnder | CWDontPropagate | CWOverrideRedirect;
-
-  /* the size of the screen the game runs on */
   Engine::window_width = XDisplayWidth(display, screen);
   Engine::window_height = XDisplayHeight(display, screen);
   printf("screen: %dx%d\n", Engine::window_width, Engine::window_height);
-  
-  Window window = XCreateWindow(display, root, 0, 0, Engine::window_width, Engine::window_height, 0, vinfo.depth, InputOutput, vinfo.visual, mask, &attr);
-  
-  XShapeCombineMask(display, window, ShapeInput, 0, 0, None, ShapeSet);
-    
-  XShapeSelectInput(display, window, ShapeNotifyMask);
-  
-  XserverRegion region = XFixesCreateRegion(display, NULL, 0);
-  XFixesSetWindowShapeRegion(display, window, ShapeInput, 0, 0, region);
-  XFixesDestroyRegion(display, region);
-
-  XdbeBackBuffer back_buffer = XdbeAllocateBackBufferName(display, window, 0);
-  
-  XMapWindow(display, window);
-
-  Draw::black = Xutil::xcolor_from_rgb(0, 0, 0, display);
-  Draw::green = Xutil::xcolor_from_rgb(0, 255, 50, draw_display);
-  Draw::red = Xutil::xcolor_from_rgb(255, 0, 50, draw_display);
-  Draw::white = Xutil::xcolor_from_rgb(255, 255, 255, draw_display);
-  Draw::cyan = Xutil::xcolor_from_rgb(0, 255, 240, draw_display);
-  Draw::yellow = Xutil::xcolor_from_rgb(255, 255, 0, draw_display);
-  Draw::orange = Xutil::xcolor_from_rgb(255, 170, 0, draw_display); 
-  
-  Draw::shadowfont = XLoadQueryFont(display, "fixed");
-  if (!Draw::shadowfont) {
-    printf("Could not Query Font \"fixed\"\n");
-    return 1;
-  }
-  
-  Draw::font = XLoadQueryFont(display, "6x13");
-  if (!Draw::font) {
-    printf("Could not Query Font \"6x13\"\n");
-    return 1;
-  }
-  /* X11 initiation end */
 
   const uintptr_t client_address = Memory::module_base_address(game_pid, "libclient.so");
   printf("client: %p\n", client_address);
@@ -178,9 +105,6 @@ int main(int argc, char *argv[]) {
     }
   });
   pthread_setname_np(player_thread.native_handle(), "player_thread");
-
-  std::thread draw_thread(draw, game_pid, back_buffer, draw_display, window);
-  pthread_setname_np(draw_thread.native_handle(), "draw_thread");
 
   std::thread move_thread(create_move, game_pid, move_display);
   pthread_setname_np(move_thread.native_handle(), "move_thread");

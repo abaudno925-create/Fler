@@ -1,7 +1,9 @@
 #include "gui.hpp"
 
 #include "config.hpp"
+#include "../engine.hpp"
 #include "menu_key.hpp"
+#include "esp_overlay.hpp"
 #include "preview3d.hpp"
 #include "settings.hpp"
 #include "skins.hpp"
@@ -642,6 +644,12 @@ void gui(int argc, char *argv[]) {
       window.hide();
     } else {
       window.show();
+
+  /* the cheat overlay: a translucent surface above the game */
+  auto *overlay = new EspOverlay;
+  overlay->setGeometry(0, 0, Engine::window_width, Engine::window_height);
+  overlay->show();
+  overlay->start();
       window.raise();
       window.activateWindow();
     }
